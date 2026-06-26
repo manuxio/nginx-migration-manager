@@ -172,11 +172,26 @@ docker compose restart nginx                  # full restart (drops connections)
   (hostname/IPv4 only, no path traversal) and hand edits are BOM-stripped. It assumes a
   trusted network — keep `APP_PORT` off the public internet and behind basic auth.
 
+## Data & persistence
+
+Runtime state lives in host bind mounts next to `docker-compose.yml`:
+
+```
+data/nginx/        # the whole /etc/nginx — nginx.conf, snippets/, sites/, certs/, …
+data/nginx/sites/  # generated host configs + their git history (shared with the app)
+data/app/          # manifest.json, served-commit, backups
+```
+
+On **first boot** the `data/nginx` folder is empty, so the nginx container seeds it from the
+image's baked-in defaults (when `nginx.conf` is missing). After that you can edit any file in
+`data/nginx/` directly on the host. Back it up by backing up `data/` (files are root-owned).
+Note: once seeded, `nginx.conf`/`snippets/` are your copy — image updates won't overwrite them.
+
 ## Project layout
 
 ```
-docker-compose.yml          # two services, three volumes, one network
-nginx/                      # hardened image: nginx.conf, snippets, entrypoint, watcher
+docker-compose.yml          # two services, host bind mounts (./data), one network
+nginx/                      # hardened image: nginx.conf, snippets, entrypoint (seeds), watcher
 app/
   server/                   # Express API: csv, validate, nginxHost (merge), gitStore, importer
   web/                      # Vite + React migration cockpit

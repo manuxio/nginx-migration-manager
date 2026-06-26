@@ -1,6 +1,9 @@
 # local secrets / per-machine config
 .env
 
+# bind-mounted runtime data (nginx config, certs, app data)
+/data/
+
 # node
 node_modules/
 npm-debug.log*

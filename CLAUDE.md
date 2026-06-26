@@ -68,12 +68,19 @@ app/
   web/                          # React (Vite)
 ```
 
-## Volumes (shared state)
+## Volumes (host bind mounts under `./data/`)
 
-- `proxy_conf` → mounted at `/etc/nginx/sites` in **both** containers. App writes, nginx
-  reads, watcher tails it. nginx includes it: `include /etc/nginx/sites/*.conf;`
-- `certs` → `/etc/nginx/certs`. Entrypoint writes the self-signed cert; nginx reads it.
-- `app_data` → app-only. Holds `manifest.json`, uploaded CSVs, and backups.
+- `./data/nginx` → the **whole `/etc/nginx`** for the nginx container (config + `snippets/` +
+  `sites/` + `certs/`). On first boot the host folder is empty, so the entrypoint **seeds**
+  it from the image's stashed defaults (`/usr/local/share/nginx-defaults`) when
+  `nginx.conf` is missing; existing files (a populated `sites/`) are left untouched.
+  Everything is editable directly on the host.
+- `./data/nginx/sites` → also mounted into the **app** at `/etc/nginx/sites` (same files).
+  App writes host configs + the git repo here; nginx includes `sites/*.conf`.
+- `./data/app` → app-only `/data`: `manifest.json`, `served-commit`, backups.
+
+(`nginx.conf` and `snippets/` are baked into the image *and* seeded to the host on first
+boot; once seeded, editing them is on you — image updates won't overwrite the host copy.)
 
 ## Hand-edit handling (the tricky part) — marker-based field merge
 

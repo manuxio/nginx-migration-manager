@@ -10,8 +10,9 @@ services:
     environment:
       - CERT_CN=${CERT_CN:-localhost}
     volumes:
-      - proxy_conf:/etc/nginx/sites
-      - certs:/etc/nginx/certs
+      # Whole nginx config on the host. Empty on first boot -> the container seeds it from
+      # the image's baked-in defaults (see nginx/entrypoint.sh). Edit files here directly.
+      - ./data/nginx:/etc/nginx
     networks:
       - nginxnet
 
@@ -32,15 +33,10 @@ services:
       - BASIC_AUTH_USER=${BASIC_AUTH_USER:-admin}
       - BASIC_AUTH_PASS=${BASIC_AUTH_PASS:-changeme}
     volumes:
-      - proxy_conf:/etc/nginx/sites
-      - app_data:/data
+      - ./data/nginx/sites:/etc/nginx/sites   # same host folder as nginx (host configs + git)
+      - ./data/app:/data                       # manifest, backups
     networks:
       - nginxnet
-
-volumes:
-  proxy_conf:
-  certs:
-  app_data:
 
 networks:
   nginxnet:
