@@ -69,6 +69,12 @@ export function pathToLocation(rawPath) {
 // this prevents duplicate location blocks (which make the config invalid).
 export function locKey(path) { return pathToLocation(path).directive; }
 
+// Upstream URL scheme: a :443 backend is HTTPS, otherwise HTTP. ("addr:port" -> "scheme://addr:port")
+export function upstreamUrl(target) {
+  const { port } = splitHostPort(target);
+  return `${port === '443' ? 'https' : 'http'}://${target}`;
+}
+
 // Order routes most-specific first, root ('/') last. nginx already picks the best prefix/exact
 // match regardless of file order; ordering only affects regex (first-match) and readability.
 // Kinds: exact (=) < prefix < regex < root; within a kind, longer paths first.
@@ -98,7 +104,7 @@ export function renderRouteBlock(route) {
     `        ${M_PRIMARY} ${primary}`,
     `        ${altLine}`,
     `        ${M_ACTIVE} ${act}`,
-    `        proxy_pass http://${target};  ${M_UPSTREAM}`,
+    `        proxy_pass ${upstreamUrl(target)};  ${M_UPSTREAM}`,
     `        include /etc/nginx/snippets/proxy.conf;`,
     `    }`,
   ].join('\n');
@@ -203,7 +209,7 @@ export function mergeDomain(existing, { domain, routes }) {
       if (rePrimary.test(line)) return mark(line, `${indent}${M_PRIMARY} ${newPrimary}`);
       if (reAlt.test(line)) return mark(line, newAlt ? `${indent}${M_ALT} ${newAlt}` : `${indent}${M_ALT}`);
       if (reActive.test(line)) { let a = (markerVal(line, 'active') || 'primary').toLowerCase(); if (a !== 'alt') a = 'primary'; if (a === 'alt' && !newAlt) a = 'primary'; curActive = a; return mark(line, `${indent}${M_ACTIVE} ${a}`); }
-      if (reUpstream.test(line)) { const target = curActive === 'alt' ? (newAlt || newPrimary) : newPrimary; return mark(line, `${indent}proxy_pass http://${target};  ${M_UPSTREAM}`); }
+      if (reUpstream.test(line)) { const target = curActive === 'alt' ? (newAlt || newPrimary) : newPrimary; return mark(line, `${indent}proxy_pass ${upstreamUrl(target)};  ${M_UPSTREAM}`); }
     }
     return line;
   });
@@ -309,7 +315,7 @@ export function switchRoute(content, routePath, target) {
     const inScope = sawRoute ? curPath === key : key === '/';
     if (inScope) {
       if (reActive.test(line)) return mark(line, `${indent}${M_ACTIVE} ${want}`);
-      if (reUpstream.test(line)) return mark(line, `${indent}proxy_pass http://${upstream};  ${M_UPSTREAM}`);
+      if (reUpstream.test(line)) return mark(line, `${indent}proxy_pass ${upstreamUrl(upstream)};  ${M_UPSTREAM}`);
     }
     return line;
   });
