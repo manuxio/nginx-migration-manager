@@ -6,7 +6,7 @@ body {
   background: #0f1115;
   color: #e6e6e6;
 }
-.wrap { max-width: 960px; margin: 0 auto; padding: 24px; }
+.wrap { max-width: 1024px; margin: 0 auto; padding: 24px; }
 h1 { font-size: 20px; margin: 0 0 4px; }
 .sub { color: #8a93a6; margin: 0 0 20px; }
 .card { background: #171a21; border: 1px solid #262b36; border-radius: 10px; padding: 16px; margin-bottom: 18px; }
