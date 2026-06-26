@@ -16,13 +16,19 @@ reverse-proxy hosts, with a small web UI to manage them.
 
 ## The core invariants (do not break these)
 
-1. **One file per proxy host.** `nginx/sites/<domain>.conf`. The domain is the filename.
-2. **Hand edits win, line by line.** Mass updates only rewrite the lines the app tagged as
-   managed (the `proxy_pass` line carries a `# managed:upstream` marker; `server_name`
-   carries `# managed:server_name`). Every untagged line — including anything you added by
-   hand — is preserved **verbatim**. A host file containing no managed markers is treated
-   as fully manual and is never touched. To "pin" an upstream so updates skip it, delete
-   the marker comment on that line.
+1. **One file per DOMAIN; one `location` block per ROUTE.** `<domain>.conf` holds every route
+   for that domain. A route = `domain` or `domain/path[/*]` (the CSV "domain-name" carries the
+   optional path). The domain is the filename; paths live inside the file as `location` blocks,
+   each with its own A/B upstreams + active selector. Path → location is **hybrid**: trailing
+   `/*` → prefix `location /x/`; `*` elsewhere → regex `location ~ ^…` (`* → .*`); no `*` →
+   exact `location = /x`; bare domain or `/` → `location /` (emitted last).
+2. **Hand edits win, line by line.** Updates only rewrite the lines the app tagged as managed,
+   **per route**: each managed block starts `# managed:route <path>` and its `# managed:primary
+   /alt/active` + the `proxy_pass` (`# managed:upstream`) lines are the only ones rewritten.
+   Untagged lines and entire hand-added `location` blocks are preserved verbatim. A file with no
+   managed markers is fully manual and never touched. Routes already in a file but absent from a
+   re-import are kept (never auto-removed). Legacy single-location files (no `# managed:route`)
+   are read/merged as one implicit root route `/`.
 3. **No mass delete.** Bulk import only creates/updates — a CSV that omits a domain does
    **not** remove it. Single-host delete IS allowed as a deliberate per-host action (GUI
    Delete button / `POST /api/host/delete`); it's committed to git, so an accidental delete
@@ -84,24 +90,29 @@ boot; once seeded, editing them is on you — image updates won't overwrite the 
 
 ## Hand-edit handling (the tricky part) — marker-based field merge
 
-The app does NOT regenerate whole files on update. It only rewrites lines it tagged.
-Each host has a PRIMARY and an ALT upstream plus an ACTIVE selector; the `proxy_pass`
-line points at whichever is active. Generated host files carry inline markers:
+The app does NOT regenerate whole files on update. It only rewrites lines it tagged, scoped
+to each ROUTE. A domain file holds one managed block per route; each block has its own
+PRIMARY + ALT upstream and ACTIVE selector:
 
 ```nginx
-    server_name app.example.com;            # managed:server_name
-    location / {
-        # managed:primary 10.0.0.10:8080
-        # managed:alt 10.0.0.11:8080
+    server_name www.example.com;            # managed:server_name
+
+    # managed:route /api/*
+    location /api/ {
+        # managed:primary 10.0.0.5:8080
+        # managed:alt 10.0.1.5:8080
         # managed:active primary
-        proxy_pass http://10.0.0.10:8080;   # managed:upstream
+        proxy_pass http://10.0.0.5:8080;    # managed:upstream
     }
+
+    # managed:route /
+    location / { … same markers … }
 ```
 
-The GUI "→ primary / → alt" buttons (and `POST /api/switch`) flip `active`, rewriting only
-the `# managed:active` and `proxy_pass` lines — this failover switch is the project's
-primary use case. On mass-import the `active` selection is **sticky** (a switch is not
-undone by re-importing), while the primary/alt values are refreshed from the CSV.
+The GUI "→ A / → B" buttons (and `POST /api/switch {domain, path}`) flip one route's `active`,
+rewriting only that block's `# managed:active` + `proxy_pass`. On import the `active` selection
+is **sticky** per route (a switch is not undone by re-importing); primary/alt values refresh
+from the CSV. `switchRoute` / `mergeDomain` are keyed by the route's path.
 
 Mass-update algorithm (per CSV row):
 - sanitize domain → reject anything that isn't a valid hostname (no `/`, `..`, spaces, etc.)
@@ -128,11 +139,15 @@ one-command rollback (`git revert` / `git checkout`). `GET /api/history` exposes
 
 ```csv
 "domain-name","address","port","alt_address","alt_port"
+"www.example.com","10.0.0.1","80","10.0.1.1","80"
+"www.example.com/api/*","10.0.0.5","8080","10.0.1.5","8080"
 ```
-- `address`/`alt_address` = IPv4 or hostname. `alt_*` optional (no alt → switch disabled).
+- `domain-name` = `host` or `host/path[/*]`. The host is the filename; the path becomes a
+  `location` (hybrid mapping). Multiple rows with the same host = multiple routes in one file.
+- `address`/`alt_address` = IPv4 or hostname. `alt_*` optional (no alt → that route can't switch).
 - `port`/`alt_port` optional, **default 80**.
-- Validate every row; surface bad rows, don't write them. The domain doubles as the
-  filename, so it's the path-traversal guard — reject anything not a clean hostname.
+- Validate every row: host must be a clean hostname (filename guard); path must match a safe
+  charset (`/[A-Za-z0-9._~%\-/*]*`) so it can't inject nginx directives.
 
 ## Commands
 
@@ -144,12 +159,14 @@ docker compose exec nginx nginx -t  # manual config test
 
 App API (served on :3000):
 - `POST /api/import`   (CSV body or `{csv}`) → dry-run unless `?apply=true`
-- `GET  /api/hosts`    → list (domain, primary, alt, active, activeUpstream, enabled, managed)
-- `POST /api/switch`   `{domain, target?}` → forward to primary/alt (omit target = toggle)
-- `POST /api/switch-bulk` `{domains:[…], target}` → batch cutover; unswitchable hosts reported, not fatal
-- `POST /api/host/upstream` `{domain, which:'primary'|'alt', value:'addr[:port]'}` → inline-edit one
-  backend (double-click in the GUI); reuses the marker merge, keeps active sticky. `''` clears alt
-- `GET  /api/host?domain=…` → raw `.conf` text + parsed A/B/active (the in-GUI peek/editor)
+- `GET  /api/hosts`    → list of `{domain, file, enabled, managed, routes:[{path, primary, alt, active, activeUpstream}]}`
+- `POST /api/switch`   `{domain, path, target?}` → flip one route to A/B (omit target = toggle)
+- `POST /api/switch-bulk` `{items:[{domain, path}], target}` → batch cutover; routes grouped per file
+- `POST /api/host/upstream` `{domain, path, which:'primary'|'alt', value:'addr[:port]'}` → inline-edit
+  one route's backend (double-click in the GUI); reuses the marker merge. `''` clears alt
+- `POST /api/host/rename` `{domain, newDomain}` → rename a host (file + `server_name`)
+- `POST /api/host/route` `{domain, path, newPath}` → rename a route's path (marker + `location`)
+- `GET  /api/host?domain=…` → raw `.conf` text + parsed `routes` (the in-GUI peek/editor)
 - `POST /api/host/save` `{domain, content}` → write a hand edit, commit a checkpoint, run
   `nginx -t`; BOM-stripped. The edit becomes **pending** (not applied until reload).
 - `GET  /api/status` → `{ reload:{ok,message}, test:{ok,message}, pending }` — what's serving,

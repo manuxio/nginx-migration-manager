@@ -1,0 +1,7 @@
+"domain-name","address","port","alt_address","alt_port"
+"www.example.com","10.0.0.1","80","10.0.1.1","80"
+"www.example.com/api/*","10.0.0.5","8080","10.0.1.5","8080"
+"www.example.com/static/*","10.0.0.7","8081","10.0.1.7","8081"
+"www.example.com/healthz","10.0.0.9","9000",,
+"shop.example.com","10.0.0.20","8080","10.0.1.20","8080"
+"shop.example.com/checkout/*","10.0.0.21","8443","10.0.1.21","8443"

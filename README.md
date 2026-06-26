@@ -72,13 +72,17 @@ Container ports are fixed (nginx 80/443, app 3000); only the **host** mapping is
 
 ```csv
 "domain-name","address","port","alt_address","alt_port"
-"app.example.com","10.0.0.10","8080","10.0.1.10","8080"
-"wiki.example.com","192.168.1.50",,,
+"www.example.com","10.0.0.1","80","10.0.1.1","80"
+"www.example.com/api/*","10.0.0.5","8080","10.0.1.5","8080"
+"www.example.com/healthz","10.0.0.9","9000",,
 ```
 
-- `address`/`alt_address` = IPv4 or hostname. `port`/`alt_port` optional, **default 80**.
-- `alt_*` (backend B) is the migration target — leave blank for hosts with no B.
-- Import is a **dry-run by default** (Preview); click Apply to commit.
+- `domain-name` is `host` **or** `host/path[/*]`. Rows sharing a host are grouped into one
+  `host.conf` with one `location` per path. Path → location is **hybrid**: trailing `/*` →
+  prefix, a `*` in the middle → regex (`*`→`.*`), no `*` → exact, bare host → whole site.
+- Each route has its own A (`address:port`) and B (`alt_address:alt_port`), switchable
+  independently. `port`s default to **80**; leave `alt_*` blank for no failover target.
+- `address`/`alt_address` = IPv4 or hostname. Import is a **dry-run by default** (Preview).
 
 ## The migration cockpit
 

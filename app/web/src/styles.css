@@ -25,6 +25,7 @@ textarea { width: 100%; min-height: 120px; background: #0f1115; color: #e6e6e6; 
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #20242e; }
 tr.running > td { background: #112619; box-shadow: inset 3px 0 0 #6ee7a0; }
+tr.domainrow > td { background: #1b1f27; border-top: 1px solid #2d333f; }
 th { color: #8a93a6; font-weight: 600; font-size: 12px; text-transform: uppercase; }
 code { font-family: ui-monospace, Menlo, Consolas, monospace; }
 .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; }

@@ -10,10 +10,11 @@ import {
 } from './config.js';
 import { ensureRepo, history, commitAll, rollbackTo, headShort } from './gitStore.js';
 import {
-  listHosts, existingFileFor, switchActive, setEnabled, writeHostFile, splitHostPort, parseHost, deleteHost, mergeHost,
+  listHosts, existingFileFor, switchRoute, setEnabled, writeHostFile, splitHostPort, parseDomain, deleteHost,
+  mergeDomain, normPath, setServerName, renameRoute, confPath,
 } from './nginxHost.js';
 import { forgetHost } from './manifest.js';
-import { isValidDomain, isValidAddress, normalizePort } from './validate.js';
+import { isValidDomain, isValidPath, isValidAddress, normalizePort } from './validate.js';
 import { toCsv } from './csv.js';
 import { importCsv } from './importer.js';
 
@@ -84,14 +85,17 @@ app.post('/api/rollback', (req, res) => {
 });
 
 app.get('/api/export', (req, res) => {
-  const hosts = listHosts().map((h) => {
-    const p = splitHostPort(h.primary);
-    const a = splitHostPort(h.alt);
-    return { domain: h.domain, address: p.address, port: p.port || 80, altAddress: a.address, altPort: a.port };
-  });
+  const rows = [];
+  for (const h of listHosts()) {
+    for (const r of h.routes) {
+      const p = splitHostPort(r.primary);
+      const a = splitHostPort(r.alt);
+      rows.push({ domain: r.path === '/' ? h.domain : h.domain + r.path, address: p.address, port: p.port || 80, altAddress: a.address, altPort: a.port });
+    }
+  }
   res.set('Content-Type', 'text/csv; charset=utf-8');
   res.set('Content-Disposition', 'attachment; filename="hosts.csv"');
-  res.send(toCsv(hosts));
+  res.send(toCsv(rows));
 });
 
 app.post('/api/import', (req, res) => {
@@ -105,26 +109,28 @@ app.post('/api/import', (req, res) => {
   }
 });
 
-// Forward to primary / alt. target = 'primary' | 'alt' | undefined (toggle).
+// Forward ONE route to primary / alt. body: {domain, path, target?}. target omitted = toggle.
 app.post('/api/switch', (req, res) => {
   const domain = reqDomain(req);
+  const route = normPath(req.body?.path ?? req.query.path);
   if (!isValidDomain(domain)) return res.status(400).json({ error: 'invalid domain' });
   const file = existingFileFor(domain);
   if (!file) return res.status(404).json({ error: 'no such host' });
 
-  const r = switchActive(fs.readFileSync(file, 'utf8'), req.body?.target);
+  const r = switchRoute(fs.readFileSync(file, 'utf8'), route, req.body?.target);
   if (r.error) return res.status(400).json({ error: r.error });
   if (r.changed) {
     writeHostFile(file, r.content);
-    commitAll(`switch ${domain} -> ${r.active} (${r.upstream})`);
+    commitAll(`switch ${domain}${route === '/' ? '' : route} -> ${r.active} (${r.upstream})`);
   }
-  res.json({ domain, active: r.active, upstream: r.upstream, changed: r.changed });
+  res.json({ domain, path: route, active: r.active, upstream: r.upstream, changed: r.changed });
 });
 
-// Inline-edit one upstream (Backend A = primary, B = alt). value = "addr[:port]" ('' clears alt).
-// Reuses the marker merge: keeps the active selection sticky; proxy_pass follows the active one.
+// Inline-edit one ROUTE's upstream. body: {domain, path, which:'primary'|'alt', value:'addr[:port]'}.
+// '' clears alt. Reuses the marker merge so the active selection stays sticky.
 app.post('/api/host/upstream', (req, res) => {
   const domain = String(req.body?.domain || '').trim().toLowerCase();
+  const route = normPath(req.body?.path);
   const which = req.body?.which;
   const value = String(req.body?.value ?? '').trim();
   if (!isValidDomain(domain)) return res.status(400).json({ error: 'invalid domain' });
@@ -133,18 +139,14 @@ app.post('/api/host/upstream', (req, res) => {
   if (!file) return res.status(404).json({ error: 'no such host' });
 
   const existing = fs.readFileSync(file, 'utf8');
-  const cur = parseHost(existing);
+  const cur = parseDomain(existing).routes.find((r) => normPath(r.path) === route);
+  if (!cur) return res.status(404).json({ error: 'no such route' });
   const p = splitHostPort(cur.primary);
   const a = splitHostPort(cur.alt);
-  const row = {
-    domain,
-    address: p.address, port: p.port || 80,
-    altAddress: a.address, altPort: a.address ? (a.port || 80) : '',
-  };
+  const row = { domain, path: route, address: p.address, port: p.port || 80, altAddress: a.address, altPort: a.address ? (a.port || 80) : '' };
 
-  if (which === 'alt' && value === '') { // clear backend B
-    row.altAddress = ''; row.altPort = '';
-  } else {
+  if (which === 'alt' && value === '') { row.altAddress = ''; row.altPort = ''; }
+  else {
     const v = splitHostPort(value);
     const port = normalizePort(v.port);
     if (!isValidAddress(v.address)) return res.status(400).json({ error: `invalid ${which} address` });
@@ -153,14 +155,57 @@ app.post('/api/host/upstream', (req, res) => {
     else { row.altAddress = v.address; row.altPort = port; }
   }
 
-  const merged = mergeHost(existing, row);
+  const merged = mergeDomain(existing, { domain, routes: [row] });
   if (merged.manual) return res.status(400).json({ error: 'host is hand-authored (no managed markers)' });
   const newVal = which === 'primary' ? `${row.address}:${row.port}` : (row.altAddress ? `${row.altAddress}:${row.altPort}` : '(none)');
   if (merged.changed) {
     writeHostFile(file, merged.content);
-    commitAll(`edit ${which} ${domain} -> ${newVal}`);
+    commitAll(`edit ${which} ${domain}${route === '/' ? '' : route} -> ${newVal}`);
   }
-  res.json({ domain, which, changed: merged.changed, value: newVal });
+  res.json({ domain, path: route, which, changed: merged.changed, value: newVal });
+});
+
+// Rename a host: rename the file (.conf/.conf.disabled) and rewrite its server_name.
+app.post('/api/host/rename', (req, res) => {
+  const domain = String(req.body?.domain || '').trim().toLowerCase();
+  const newDomain = String(req.body?.newDomain || '').trim().toLowerCase();
+  if (!isValidDomain(domain)) return res.status(400).json({ error: 'invalid domain' });
+  if (!isValidDomain(newDomain)) return res.status(400).json({ error: 'invalid new domain' });
+  const file = existingFileFor(domain);
+  if (!file) return res.status(404).json({ error: 'no such host' });
+  if (newDomain === domain) return res.json({ domain, changed: false });
+  if (existingFileFor(newDomain)) return res.status(400).json({ error: `host ${newDomain} already exists` });
+
+  const disabled = file.endsWith('.disabled');
+  const newFile = disabled ? `${confPath(newDomain)}.disabled` : confPath(newDomain);
+  writeHostFile(newFile, setServerName(fs.readFileSync(file, 'utf8'), newDomain));
+  fs.unlinkSync(file);
+  forgetHost(domain);
+  commitAll(`rename ${domain} -> ${newDomain}`);
+  res.json({ domain: newDomain, changed: true });
+});
+
+// Rename a route's path within a host file. body: {domain, path, newPath}.
+app.post('/api/host/route', (req, res) => {
+  const domain = String(req.body?.domain || '').trim().toLowerCase();
+  const oldPath = normPath(req.body?.path);
+  let newPath = String(req.body?.newPath ?? '').trim();
+  if (newPath !== '' && newPath !== '/' && !newPath.startsWith('/')) newPath = `/${newPath}`;
+  newPath = normPath(newPath);
+  if (!isValidDomain(domain)) return res.status(400).json({ error: 'invalid domain' });
+  if (!isValidPath(newPath === '/' ? '' : newPath)) return res.status(400).json({ error: 'invalid path (use /path or /path/*)' });
+  const file = existingFileFor(domain);
+  if (!file) return res.status(404).json({ error: 'no such host' });
+
+  const existing = fs.readFileSync(file, 'utf8');
+  const routes = parseDomain(existing).routes;
+  if (!routes.some((r) => normPath(r.path) === oldPath)) return res.status(404).json({ error: 'no such route' });
+  if (newPath !== oldPath && routes.some((r) => normPath(r.path) === newPath)) return res.status(400).json({ error: `route ${newPath} already exists` });
+
+  const r = renameRoute(existing, oldPath, newPath);
+  if (r.error) return res.status(400).json({ error: r.error });
+  if (r.changed) { writeHostFile(file, r.content); commitAll(`rename route ${domain} ${oldPath} -> ${newPath}`); }
+  res.json({ domain, path: newPath, changed: r.changed });
 });
 
 // Peek: raw config file + parsed metadata for one host (for the in-GUI viewer).
@@ -170,30 +215,43 @@ app.get('/api/host', (req, res) => {
   const file = existingFileFor(domain);
   if (!file) return res.status(404).json({ error: 'no such host' });
   const content = fs.readFileSync(file, 'utf8');
-  res.json({ domain, file: path.basename(file), enabled: file.endsWith('.conf'), content, ...parseHost(content) });
+  const parsed = parseDomain(content);
+  res.json({ domain, file: path.basename(file), enabled: file.endsWith('.conf'), content, managed: parsed.managed, routes: parsed.routes });
 });
 
-// Bulk cutover: switch many hosts at once (the filtered set). target = 'primary' | 'alt'.
-// Hosts without an alt (or otherwise unswitchable) are reported, not fatal.
+// Bulk cutover: switch many ROUTES at once (the filtered set). target = 'primary' | 'alt'.
+// body: {items:[{domain, path}], target}. Routes are grouped per file so each file is written once.
 app.post('/api/switch-bulk', (req, res) => {
   const target = req.body?.target;
-  const domains = Array.isArray(req.body?.domains) ? req.body.domains : [];
+  const items = Array.isArray(req.body?.items) ? req.body.items : [];
   if (target !== 'primary' && target !== 'alt') return res.status(400).json({ error: 'target must be primary or alt' });
+
+  const byDomain = new Map();
+  for (const it of items) {
+    const domain = String(it?.domain || '').trim().toLowerCase();
+    if (!isValidDomain(domain)) continue;
+    if (!byDomain.has(domain)) byDomain.set(domain, []);
+    byDomain.get(domain).push(normPath(it?.path));
+  }
 
   const results = [];
   let changed = 0;
-  for (const raw of domains) {
-    const domain = String(raw || '').trim().toLowerCase();
-    if (!isValidDomain(domain)) { results.push({ domain, error: 'invalid domain' }); continue; }
+  for (const [domain, paths] of byDomain) {
     const file = existingFileFor(domain);
-    if (!file) { results.push({ domain, error: 'no such host' }); continue; }
-    const r = switchActive(fs.readFileSync(file, 'utf8'), target);
-    if (r.error) { results.push({ domain, error: r.error }); continue; }
-    if (r.changed) { writeHostFile(file, r.content); changed++; }
-    results.push({ domain, active: r.active, upstream: r.upstream, changed: r.changed });
+    if (!file) { for (const p of paths) results.push({ domain, path: p, error: 'no such host' }); continue; }
+    let content = fs.readFileSync(file, 'utf8');
+    let fileChanged = false;
+    for (const p of paths) {
+      const r = switchRoute(content, p, target);
+      if (r.error) { results.push({ domain, path: p, error: r.error }); continue; }
+      content = r.content;
+      if (r.changed) { fileChanged = true; changed++; }
+      results.push({ domain, path: p, active: r.active, upstream: r.upstream, changed: r.changed });
+    }
+    if (fileChanged) writeHostFile(file, content);
   }
-  if (changed > 0) commitAll(`bulk cutover: ${changed} host(s) -> ${target}`);
-  res.json({ target, changed, total: domains.length, results });
+  if (changed > 0) commitAll(`bulk cutover: ${changed} route(s) -> ${target}`);
+  res.json({ target, changed, total: items.length, results });
 });
 
 // Enable / disable a host (rename .conf <-> .conf.disabled).
