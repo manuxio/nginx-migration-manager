@@ -31,6 +31,30 @@ docker compose up -d --build
 
 Load `examples/test-10-hosts.csv` from the UI (Import → Preview → Apply) to try it.
 
+## Deploy from prebuilt images (GHCR)
+
+For servers you don't want to build on, CI publishes both images to GitHub Container
+Registry (public — no login to pull):
+
+```text
+ghcr.io/manuxio/nginx-migration-manager/nginx
+ghcr.io/manuxio/nginx-migration-manager/app
+```
+
+Tags: `latest`, `sha-<short>`, and `vX.Y.Z` on release tags. The host only needs Docker plus
+`docker-compose.yml` and `.env` (scp them over, or clone the repo) — no source build:
+
+```bash
+docker compose pull          # fetch the published images
+docker compose up -d         # run them; no build on the host
+```
+
+Pin a version with `IMAGE_TAG=v1.2.3` in `.env`; update later with
+`docker compose pull && docker compose up -d`. The workflow
+(`.github/workflows/publish.yml`) rebuilds and pushes on every push to `main` and on `v*`
+tags. (One-time: after the first CI run, set each package's visibility to **Public** in its
+GitHub package settings.)
+
 ## Configuration (`.env`)
 
 | Variable | Default | Purpose |

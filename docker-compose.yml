@@ -1,6 +1,7 @@
 services:
   nginx:
     build: ./nginx
+    image: ghcr.io/manuxio/nginx-migration-manager/nginx:${IMAGE_TAG:-latest}
     container_name: nginx-managed-proxy
     restart: unless-stopped
     ports:
@@ -16,6 +17,7 @@ services:
 
   app:
     build: ./app
+    image: ghcr.io/manuxio/nginx-migration-manager/app:${IMAGE_TAG:-latest}
     container_name: nginx-managed-app
     restart: unless-stopped
     # Admin UI. Protected by basic auth + assumed to be on a trusted network.
