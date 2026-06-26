@@ -11,7 +11,7 @@ import {
 import { ensureRepo, history, commitAll, rollbackTo, headShort } from './gitStore.js';
 import {
   listHosts, existingFileFor, switchRoute, setEnabled, writeHostFile, splitHostPort, parseDomain, deleteHost,
-  mergeDomain, normPath, setServerName, renameRoute, confPath, renderDomain, locKey,
+  mergeDomain, normPath, setServerName, renameRoute, confPath, renderDomain, locKey, deleteRoute,
 } from './nginxHost.js';
 import { forgetHost } from './manifest.js';
 import { isValidDomain, isValidPath, isValidAddress, normalizePort } from './validate.js';
@@ -213,6 +213,24 @@ app.post('/api/host/rename', (req, res) => {
   forgetHost(domain);
   commitAll(`rename ${domain} -> ${newDomain}`);
   res.json({ domain: newDomain, changed: true });
+});
+
+// Delete a single route (path) from a host file. body: {domain, path}.
+app.post('/api/host/route/delete', (req, res) => {
+  const domain = String(req.body?.domain || '').trim().toLowerCase();
+  const route = normPath(req.body?.path);
+  if (!isValidDomain(domain)) return res.status(400).json({ error: 'invalid domain' });
+  const file = existingFileFor(domain);
+  if (!file) return res.status(404).json({ error: 'no such host' });
+  const existing = fs.readFileSync(file, 'utf8');
+  const routes = parseDomain(existing).routes;
+  if (!routes.some((r) => normPath(r.path) === route)) return res.status(404).json({ error: 'no such route' });
+  if (routes.length <= 1) return res.status(400).json({ error: 'cannot delete the only route — delete the host instead' });
+  const r = deleteRoute(existing, route);
+  if (r.error) return res.status(400).json({ error: r.error });
+  writeHostFile(file, r.content);
+  commitAll(`delete route ${domain} ${route}`);
+  res.json({ domain, path: route, deleted: true });
 });
 
 // Rename a route's path within a host file. body: {domain, path, newPath}.

@@ -18,6 +18,7 @@ const api = {
   renameRoute: (domain, path, newPath) => post('/api/host/route', { domain, path, newPath }),
   addHost: (domain) => post('/api/host/add', { domain }),
   addRoute: (domain, path) => post('/api/host/route/add', { domain, path }),
+  delRoute: (domain, path) => post('/api/host/route/delete', { domain, path }),
   enable: (domain) => post('/api/enable', { domain }),
   disable: (domain) => post('/api/disable', { domain }),
   del: (domain) => post('/api/host/delete', { domain }),
@@ -44,8 +45,10 @@ export default function App() {
   const [editVal, setEditVal] = useState('');
   const [addingHost, setAddingHost] = useState(false);
   const [hostInput, setHostInput] = useState('');
+  const [addHostErr, setAddHostErr] = useState(null);
   const [addPathFor, setAddPathFor] = useState(null); // host.file
   const [pathInput, setPathInput] = useState('');
+  const [addPathErr, setAddPathErr] = useState(null);
   const [peek, setPeek] = useState(null);
   const [editContent, setEditContent] = useState('');
   const [saveMsg, setSaveMsg] = useState(null);
@@ -169,15 +172,29 @@ export default function App() {
   // add a new host (default root route 127.0.0.1:80) / add a path to a host
   async function createHost() {
     const d = hostInput.trim().toLowerCase();
-    setAddingHost(false); setHostInput('');
-    if (!d) return;
-    await run(() => api.addHost(d).then((r) => { if (r && r.error) window.alert(`Add host failed: ${r.error}`); }));
+    if (!d) { setAddingHost(false); setAddHostErr(null); return; }
+    setBusy(true);
+    try {
+      const r = await api.addHost(d);
+      if (r && r.error) { setAddHostErr(r.error); return; }  // keep input open, show error
+      setAddingHost(false); setHostInput(''); setAddHostErr(null); await refresh();
+    } finally { setBusy(false); }
+    setTimeout(refresh, 1400);
   }
   async function createPath(host) {
     const p = pathInput.trim();
-    setAddPathFor(null); setPathInput('');
-    if (!p) return;
-    await run(() => api.addRoute(host.domain, p).then((r) => { if (r && r.error) window.alert(`Add path failed: ${r.error}`); }));
+    if (!p) { setAddPathFor(null); setAddPathErr(null); return; }
+    setBusy(true);
+    try {
+      const r = await api.addRoute(host.domain, p);
+      if (r && r.error) { setAddPathErr(r.error); return; }  // keep input open, show error
+      setAddPathFor(null); setPathInput(''); setAddPathErr(null); await refresh();
+    } finally { setBusy(false); }
+    setTimeout(refresh, 1400);
+  }
+  async function delPath(host, route) {
+    if (!window.confirm(`Delete path "${route.path}" from ${host.domain}?`)) return;
+    await run(() => api.delRoute(host.domain, route.path).then((r) => { if (r && r.error) window.alert(`Delete failed: ${r.error}`); }));
   }
 
   async function openPeek(domain) {
@@ -297,12 +314,13 @@ export default function App() {
           {addingHost
             ? <span className="row" style={{ gap: 6 }}>
                 <input className="cellinput" autoFocus placeholder="new.example.com" value={hostInput}
-                  onChange={(e) => setHostInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') createHost(); else if (e.key === 'Escape') { setAddingHost(false); setHostInput(''); } }} />
+                  onChange={(e) => { setHostInput(e.target.value); setAddHostErr(null); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') createHost(); else if (e.key === 'Escape') { setAddingHost(false); setHostInput(''); setAddHostErr(null); } }} />
                 <button className="sm" onClick={createHost} disabled={busy}>Add host</button>
-                <button className="ghost sm" onClick={() => { setAddingHost(false); setHostInput(''); }}>Cancel</button>
+                <button className="ghost sm" onClick={() => { setAddingHost(false); setHostInput(''); setAddHostErr(null); }}>Cancel</button>
+                {addHostErr && <span style={{ color: '#f5a3a3' }}>{addHostErr}</span>}
               </span>
-            : <button className="ghost" onClick={() => setAddingHost(true)} disabled={busy}>+ Add host</button>}
+            : <button className="ghost" onClick={() => { setAddingHost(true); setAddHostErr(null); }} disabled={busy}>+ Add host</button>}
           <span className="muted">·  Bulk ({filteredRoutes.filter((x) => x.host.managed).length} filtered routes):</span>
           <button onClick={() => bulk('alt')} disabled={busy}>Cut over → B</button>
           <button className="ghost" onClick={() => bulk('primary')} disabled={busy}>Roll back → A</button>
@@ -329,7 +347,7 @@ export default function App() {
                       <span className="row" style={{ gap: 6, marginLeft: 'auto' }}>
                         <button className="ghost sm" title="switch ALL routes to backend A" disabled={busy || !g.host.managed || !g.host.routes.some((r) => r.active === 'alt')} onClick={() => hostSwitch(g.host, 'primary')}>→ A</button>
                         <button className="ghost sm" title="switch ALL routes to backend B" disabled={busy || !g.host.managed || !g.host.routes.some((r) => r.alt && r.active === 'primary')} onClick={() => hostSwitch(g.host, 'alt')}>→ B</button>
-                        <button className="ghost sm" title="add a path/route to this host" disabled={busy || !g.host.managed} onClick={() => { setAddPathFor(g.host.file); setPathInput(''); }}>+ path</button>
+                        <button className="ghost sm" title="add a path/route to this host" disabled={busy || !g.host.managed} onClick={() => { setAddPathFor(g.host.file); setPathInput(''); setAddPathErr(null); }}>+ path</button>
                         <button className="ghost sm" onClick={() => openPeek(g.host.domain)}>Peek / edit file</button>
                         <a className="sm" href={`/api/download?domain=${encodeURIComponent(g.host.domain)}`}><button className="ghost sm">↓</button></a>
                         {g.host.enabled
@@ -345,11 +363,11 @@ export default function App() {
                     <td colSpan={5} style={{ paddingLeft: 22 }}>
                       <span className="row" style={{ gap: 6 }}>
                         <input className="cellinput" autoFocus placeholder="/path/* (or / for whole site)" value={pathInput}
-                          onChange={(e) => setPathInput(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === 'Enter') createPath(g.host); else if (e.key === 'Escape') { setAddPathFor(null); setPathInput(''); } }} />
+                          onChange={(e) => { setPathInput(e.target.value); setAddPathErr(null); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') createPath(g.host); else if (e.key === 'Escape') { setAddPathFor(null); setPathInput(''); setAddPathErr(null); } }} />
                         <button className="sm" onClick={() => createPath(g.host)} disabled={busy}>Add path</button>
-                        <button className="ghost sm" onClick={() => { setAddPathFor(null); setPathInput(''); }}>Cancel</button>
-                        <span className="muted">new route → 127.0.0.1:80, no Backend B</span>
+                        <button className="ghost sm" onClick={() => { setAddPathFor(null); setPathInput(''); setAddPathErr(null); }}>Cancel</button>
+                        {addPathErr ? <span style={{ color: '#f5a3a3' }}>{addPathErr}</span> : <span className="muted">new route → 127.0.0.1:80, no Backend B</span>}
                       </span>
                     </td>
                   </tr>
@@ -371,6 +389,7 @@ export default function App() {
                       <div className="row">
                         <button className="ghost sm" disabled={busy || !g.host.managed || route.active === 'primary'} onClick={() => run(() => api.switch(g.host.domain, route.path, 'primary'))}>→ A</button>
                         <button className="ghost sm" disabled={busy || !g.host.managed || !route.alt || route.active === 'alt'} onClick={() => run(() => api.switch(g.host.domain, route.path, 'alt'))}>→ B</button>
+                        <button className="ghost sm danger" title="delete this path (delete the host to remove its last route)" disabled={busy || g.host.routes.length <= 1} onClick={() => delPath(g.host, route)}>✕</button>
                       </div>
                     </td>
                   </tr>

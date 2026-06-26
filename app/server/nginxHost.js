@@ -69,6 +69,21 @@ export function pathToLocation(rawPath) {
 // this prevents duplicate location blocks (which make the config invalid).
 export function locKey(path) { return pathToLocation(path).directive; }
 
+// Order routes most-specific first, root ('/') last. nginx already picks the best prefix/exact
+// match regardless of file order; ordering only affects regex (first-match) and readability.
+// Kinds: exact (=) < prefix < regex < root; within a kind, longer paths first.
+function bySpecificity(a, b) {
+  const rank = (p) => {
+    const k = normPath(p);
+    if (k === '/') return [9, 0];
+    const d = pathToLocation(k).directive;
+    const kind = d.startsWith('location =') ? 0 : d.startsWith('location ~') ? 2 : 1;
+    return [kind, -k.length];
+  };
+  const ra = rank(a.path); const rb = rank(b.path);
+  return ra[0] - rb[0] || ra[1] - rb[1] || normPath(a.path).localeCompare(normPath(b.path));
+}
+
 // One location block (4-space server indent).
 export function renderRouteBlock(route) {
   const { directive } = pathToLocation(route.path);
@@ -93,8 +108,7 @@ export function renderRouteBlock(route) {
 export function renderDomain({ domain, routes }) {
   const byLoc = new Map();
   for (const r of routes) byLoc.set(locKey(r.path), r); // dedupe equivalent locations (last wins)
-  const sorted = [...byLoc.values()].sort((a, b) => (normPath(a.path) === '/' ? 1 : normPath(b.path) === '/' ? -1 : 0));
-  const blocks = sorted.map(renderRouteBlock).join('\n\n');
+  const blocks = [...byLoc.values()].sort(bySpecificity).map(renderRouteBlock).join('\n\n');
   return `# managed-by: nginx-managed
 # domain: ${domain}
 # Generated. One location per route; lines tagged "# managed:*" are rewritten on import,
@@ -116,15 +130,15 @@ export function parseDomain(content) {
   const routes = [];
   const lines = content.split('\n');
   let cur = null;
+  let sawRoute = false;
+  const blankRoot = () => ({ path: '/', primary: '', alt: '', active: 'primary', activeUpstream: '' });
   const pushCur = () => { if (cur) routes.push(cur); };
 
-  const hasRouteMarkers = reRoute.test(content);
-  if (!hasRouteMarkers && /#\s*managed:(upstream|primary)\b/.test(content)) {
-    cur = { path: '/', primary: '', alt: '', active: 'primary', activeUpstream: '' }; // legacy root
-  }
-
   for (const line of lines) {
-    if (reRoute.test(line)) { pushCur(); cur = { path: normPath(markerVal(line, 'route') || '/'), primary: '', alt: '', active: 'primary', activeUpstream: '' }; continue; }
+    if (reRoute.test(line)) { pushCur(); cur = { ...blankRoot(), path: normPath(markerVal(line, 'route') || '/') }; sawRoute = true; continue; }
+    // markers appearing BEFORE any "# managed:route" belong to an implicit root route ('/')
+    // — this covers legacy single-location files and mixed files (old root + new routes).
+    if (cur === null && !sawRoute && (rePrimary.test(line) || reAlt.test(line) || reActive.test(line) || reUpstream.test(line))) cur = blankRoot();
     if (!cur) continue;
     if (rePrimary.test(line)) cur.primary = markerVal(line, 'primary') || '';
     else if (reAlt.test(line)) cur.alt = markerVal(line, 'alt') || '';
@@ -132,7 +146,6 @@ export function parseDomain(content) {
     else if (reUpstream.test(line)) { const m = line.match(/proxy_pass\s+https?:\/\/([^;\s]+)/i); if (m) cur.activeUpstream = m[1]; }
   }
   pushCur();
-  // legacy fallback: if primary unknown, take it from the proxy_pass
   for (const r of routes) { if (!r.primary && r.activeUpstream) r.primary = r.activeUpstream; }
   return { managed, routes };
 }
@@ -141,6 +154,24 @@ function insertBeforeServerClose(content, blocks) {
   const idx = content.lastIndexOf('\n}');
   if (idx < 0) return `${content}\n${blocks}\n`;
   return `${content.slice(0, idx)}\n${blocks}${content.slice(idx)}`;
+}
+
+// Insert new route blocks just before the root location block (so '/' stays last); if there's
+// no root block, fall back to inserting before the server's closing brace.
+function insertBeforeRoot(content, blocks) {
+  const lines = content.split('\n');
+  let idx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (reRoute.test(lines[i]) && normPath(markerVal(lines[i], 'route') || '/') === '/') { idx = i; break; }
+  }
+  if (idx < 0) {
+    for (let i = 0; i < lines.length; i++) {
+      if (reRoute.test(lines[i])) break; // hit a marked route first -> no implicit root above
+      if (/^\s*location\s+\/\s*\{/.test(lines[i])) { idx = i; break; }
+    }
+  }
+  if (idx < 0) return insertBeforeServerClose(content, blocks);
+  return [...lines.slice(0, idx), ...blocks.split('\n'), ...lines.slice(idx)].join('\n');
 }
 
 // Merge CSV routes for a domain into an existing file: surgically rewrite the marker lines of
@@ -183,7 +214,8 @@ export function mergeDomain(existing, { domain, routes }) {
   const newRoutes = [];
   for (const r of routes) { const k = locKey(r.path); if (seen.has(k)) continue; seen.add(k); newRoutes.push(r); }
   if (newRoutes.length) {
-    content = insertBeforeServerClose(content, newRoutes.map((r) => `\n${renderRouteBlock(r)}\n`).join(''));
+    newRoutes.sort(bySpecificity);
+    content = insertBeforeRoot(content, newRoutes.map((r) => `\n${renderRouteBlock(r)}\n`).join(''));
     changed = true;
   }
   return { manual: false, changed, content };
@@ -221,6 +253,39 @@ export function renameRoute(content, oldPath, newPath) {
   return { changed, content: out.join('\n') };
 }
 
+// Remove one route's block (its "# managed:route" marker + the following location { ... }).
+export function deleteRoute(content, routePath) {
+  const key = normPath(routePath);
+  const lines = content.split('\n');
+  let markerLine = -1;
+  let locLine = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (reRoute.test(lines[i]) && normPath(markerVal(lines[i], 'route') || '/') === key) { markerLine = i; break; }
+  }
+  if (markerLine >= 0) {
+    locLine = markerLine + 1;
+    while (locLine < lines.length && !lines[locLine].includes('{')) locLine++;
+  } else if (key === '/') {
+    // implicit root: the first location block before any "# managed:route"
+    for (let i = 0; i < lines.length; i++) {
+      if (reRoute.test(lines[i])) break;
+      if (/^\s*location\s/.test(lines[i])) { locLine = i; break; }
+    }
+  }
+  if (locLine < 0 || locLine >= lines.length) return { error: 'no such route' };
+  let depth = 0; let end = -1;
+  for (let k = locLine; k < lines.length; k++) {
+    for (const ch of lines[k]) { if (ch === '{') depth++; else if (ch === '}') depth--; }
+    if (depth === 0) { end = k; break; }
+  }
+  if (end < 0) return { error: 'malformed route block' };
+  let s = markerLine >= 0 ? markerLine : locLine;
+  let e = end;
+  if (s > 0 && lines[s - 1].trim() === '') s -= 1;            // tidy a preceding blank
+  if (lines[e + 1] !== undefined && lines[e + 1].trim() === '') e += 1; // and a trailing blank
+  return { changed: true, content: [...lines.slice(0, s), ...lines.slice(e + 1)].join('\n') };
+}
+
 // Flip one route's active backend. target = 'primary' | 'alt' | undefined (toggle).
 export function switchRoute(content, routePath, target) {
   const key = normPath(routePath);
@@ -234,13 +299,14 @@ export function switchRoute(content, routePath, target) {
   if (!upstream) return { error: 'no upstream to switch to' };
 
   let curPath = null;
+  let sawRoute = false;
   let changed = false;
   const mark = (was, next) => { if (next !== was) changed = true; return next; };
-  const isLegacy = !reRoute.test(content);
   const out = content.split('\n').map((line) => {
     const indent = (line.match(/^\s*/) || [''])[0];
-    if (reRoute.test(line)) { curPath = normPath(markerVal(line, 'route') || '/'); return line; }
-    const inScope = isLegacy ? key === '/' : curPath === key;
+    if (reRoute.test(line)) { curPath = normPath(markerVal(line, 'route') || '/'); sawRoute = true; return line; }
+    // before any "# managed:route", markers belong to the implicit root ('/')
+    const inScope = sawRoute ? curPath === key : key === '/';
     if (inScope) {
       if (reActive.test(line)) return mark(line, `${indent}${M_ACTIVE} ${want}`);
       if (reUpstream.test(line)) return mark(line, `${indent}proxy_pass http://${upstream};  ${M_UPSTREAM}`);
