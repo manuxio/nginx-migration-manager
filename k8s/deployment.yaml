@@ -1,0 +1,55 @@
+# Single Pod, two containers (nginx + app) sharing the PVC — mirrors docker-compose.
+# Containers in a Pod share volumes, so the file-based IPC + polling watcher work unchanged.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-managed
+  labels: { app: nginx-managed }
+spec:
+  replicas: 1                 # the design is single-writer; do NOT scale this (see k8s/README.md)
+  strategy: { type: Recreate }   # RWO PVC can't be on two pods during a rolling update
+  selector:
+    matchLabels: { app: nginx-managed }
+  template:
+    metadata:
+      labels: { app: nginx-managed }
+    spec:
+      containers:
+        - name: nginx
+          image: ghcr.io/manuxio/nginx-migration-manager/nginx:latest   # pin to sha-… in prod
+          ports:
+            - { name: http, containerPort: 80 }
+          volumeMounts:
+            - { name: static, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf, readOnly: true }
+            - { name: static, mountPath: /etc/nginx/snippets/proxy.conf, subPath: proxy.conf, readOnly: true }
+            - { name: data,   mountPath: /etc/nginx/sites, subPath: sites }
+          readinessProbe:
+            tcpSocket: { port: http }
+            initialDelaySeconds: 5
+          livenessProbe:
+            tcpSocket: { port: http }
+            initialDelaySeconds: 15
+
+        - name: app
+          image: ghcr.io/manuxio/nginx-migration-manager/app:latest    # pin to sha-… in prod
+          ports:
+            - { name: admin, containerPort: 3000 }
+          env:
+            - { name: SITES_DIR, value: /etc/nginx/sites }
+            - { name: DATA_DIR,  value: /data }
+            - name: BASIC_AUTH_USER
+              valueFrom: { secretKeyRef: { name: nginx-managed-auth, key: user } }
+            - name: BASIC_AUTH_PASS
+              valueFrom: { secretKeyRef: { name: nginx-managed-auth, key: pass } }
+          volumeMounts:
+            - { name: data, mountPath: /etc/nginx/sites, subPath: sites }
+            - { name: data, mountPath: /data,            subPath: appdata }
+          readinessProbe:
+            tcpSocket: { port: admin }   # /api/status needs basic auth, so probe the socket
+            initialDelaySeconds: 5
+
+      volumes:
+        - name: static
+          configMap: { name: nginx-managed-config }
+        - name: data
+          persistentVolumeClaim: { claimName: nginx-managed-data }

@@ -1,0 +1,63 @@
+# GKE variant: the dynamic state lives in a GCS bucket mounted via the Cloud Storage FUSE
+# CSI driver (instead of a PVC). Reuses configmap.yaml / secret.yaml / service.yaml from k8s/.
+# READ k8s/gke-gcs/README.md first — there are real caveats (git on object storage).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-managed
+  labels: { app: nginx-managed }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: nginx-managed }
+  template:
+    metadata:
+      labels: { app: nginx-managed }
+      annotations:
+        gke-gcsfuse/volumes: "true"          # inject the gcsfuse sidecar
+        gke-gcsfuse/cpu-limit: "250m"
+        gke-gcsfuse/memory-limit: 256Mi
+    spec:
+      serviceAccountName: nginx-managed       # Workload Identity -> bucket access
+      containers:
+        - name: nginx
+          image: ghcr.io/manuxio/nginx-migration-manager/nginx:latest
+          ports:
+            - { name: http, containerPort: 80 }
+          volumeMounts:
+            - { name: static, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf, readOnly: true }
+            - { name: static, mountPath: /etc/nginx/snippets/proxy.conf, subPath: proxy.conf, readOnly: true }
+            - { name: bucket, mountPath: /etc/nginx/sites, subPath: sites }
+          readinessProbe: { tcpSocket: { port: http }, initialDelaySeconds: 5 }
+          livenessProbe:  { tcpSocket: { port: http }, initialDelaySeconds: 15 }
+
+        - name: app
+          image: ghcr.io/manuxio/nginx-migration-manager/app:latest
+          ports:
+            - { name: admin, containerPort: 3000 }
+          env:
+            - { name: SITES_DIR, value: /etc/nginx/sites }
+            - { name: DATA_DIR,  value: /data }
+            - name: BASIC_AUTH_USER
+              valueFrom: { secretKeyRef: { name: nginx-managed-auth, key: user } }
+            - name: BASIC_AUTH_PASS
+              valueFrom: { secretKeyRef: { name: nginx-managed-auth, key: pass } }
+          volumeMounts:
+            - { name: bucket, mountPath: /etc/nginx/sites, subPath: sites }
+            - { name: bucket, mountPath: /data,            subPath: appdata }
+          readinessProbe: { tcpSocket: { port: admin }, initialDelaySeconds: 5 }
+
+      volumes:
+        - name: static
+          configMap: { name: nginx-managed-config }
+        - name: bucket
+          csi:
+            driver: gcsfuse.csi.storage.gke.io
+            readOnly: false
+            volumeAttributes:
+              bucketName: YOUR_BUCKET_NAME
+              # implicit-dirs: present GCS prefixes as folders (needed for sites/ , appdata/ , .git/)
+              # low cache TTLs: so the two containers see each other's writes promptly (the
+              # file IPC depends on it). Raise them if you don't need fast cross-container reads.
+              mountOptions: "implicit-dirs,metadata-cache:ttl-secs:1,type-cache:ttl-secs:1,stat-cache-max-size-mb:32"

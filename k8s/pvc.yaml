@@ -1,0 +1,13 @@
+# Holds the dynamic state: per-host .conf files + their git history (subPath "sites")
+# and the app's manifest/backups (subPath "appdata"). ReadWriteOnce is fine for the
+# single-pod (two-container) deployment.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nginx-managed-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+  # storageClassName: standard-rwo   # set to your cluster's class if the default isn't right

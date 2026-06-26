@@ -1,0 +1,23 @@
+# Proxy (HTTP/80) — exposed. Swap LoadBalancer for ClusterIP + an Ingress if you prefer.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-managed-proxy
+spec:
+  type: LoadBalancer
+  selector: { app: nginx-managed }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+---
+# Admin UI (3000) — kept internal. Reach it with:
+#   kubectl port-forward svc/nginx-managed-admin 3000:3000
+# (it's behind basic auth, but don't put it on a public LoadBalancer).
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-managed-admin
+spec:
+  type: ClusterIP
+  selector: { app: nginx-managed }
+  ports:
+    - { name: admin, port: 3000, targetPort: admin }

@@ -1,0 +1,88 @@
+# nginx-migration-manager on GKE — AUTO-SEED, using your existing PVC for storage.
+# The WHOLE /etc/nginx lives on the PVC (subPath "nginxconf"). On first boot it's empty, so the
+# nginx entrypoint seeds it from the image's baked defaults (nginx.conf, snippets/, mime.types …).
+# No ConfigMap — edit nginx.conf/snippets on the volume afterwards (changes persist on the PVC).
+#
+#   PVC layout:  nginxconf/         -> /etc/nginx          (whole config, seeded; nginx container)
+#                nginxconf/sites/   -> /etc/nginx/sites    (host .conf + git; shared with app)
+#                appdata/           -> /data               (manifest, backups; app container)
+#
+# Apply:  kubectl apply -f gke-demo-pvc.yaml   (set a real password first; HTTP/80 only)
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nginx-managed-auth
+type: Opaque
+stringData:
+  user: coni
+  pass: CHANGE-ME             # <-- set a real password before applying (don't commit it)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-managed
+  labels: { app: nginx-managed }
+spec:
+  replicas: 1                  # single-writer design — do not scale
+  strategy: { type: Recreate } # RWO PVC; no rolling update
+  selector:
+    matchLabels: { app: nginx-managed }
+  template:
+    metadata:
+      labels: { app: nginx-managed }
+    spec:
+      containers:
+        - name: nginx
+          image: eu.gcr.io/n-gke-eps-prod/nginx:sha-5e84bf0
+          ports:
+            - { name: http, containerPort: 80 }
+          volumeMounts:
+            # whole /etc/nginx on the PVC -> empty on first boot -> entrypoint seeds it
+            - { name: data, mountPath: /etc/nginx, subPath: nginxconf }
+          readinessProbe: { tcpSocket: { port: http }, initialDelaySeconds: 5 }
+          livenessProbe:  { tcpSocket: { port: http }, initialDelaySeconds: 15 }
+
+        - name: app
+          image: eu.gcr.io/n-gke-eps-prod/app:sha-5e84bf0
+          ports:
+            - { name: admin, containerPort: 3000 }
+          env:
+            - { name: SITES_DIR, value: /etc/nginx/sites }
+            - { name: DATA_DIR,  value: /data }
+            - name: BASIC_AUTH_USER
+              valueFrom: { secretKeyRef: { name: nginx-managed-auth, key: user } }
+            - name: BASIC_AUTH_PASS
+              valueFrom: { secretKeyRef: { name: nginx-managed-auth, key: pass } }
+          volumeMounts:
+            # the sites/ subdir of the same seeded config dir, shared with nginx
+            - { name: data, mountPath: /etc/nginx/sites, subPath: nginxconf/sites }
+            - { name: data, mountPath: /data,            subPath: appdata }
+          readinessProbe: { tcpSocket: { port: admin }, initialDelaySeconds: 5 }
+
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: demo-gke-shared-pvc      # <-- your existing PVC
+---
+# Proxy (HTTP/80) — GKE provisions a network Load Balancer.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-managed-proxy
+spec:
+  type: LoadBalancer
+  selector: { app: nginx-managed }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+---
+# Admin UI (3000) — internal only:  kubectl port-forward svc/nginx-managed-admin 3000:3000
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-managed-admin
+spec:
+  type: ClusterIP
+  selector: { app: nginx-managed }
+  ports:
+    - { name: admin, port: 3000, targetPort: admin }
