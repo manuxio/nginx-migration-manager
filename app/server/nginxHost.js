@@ -64,6 +64,11 @@ export function pathToLocation(rawPath) {
   return { key: p, directive: `location ~ ${'^' + p.split('*').map(escapeRe).join('.*')}` };
 }
 
+// Canonical route identity = the nginx location directive it produces. Two paths that yield
+// the same location (e.g. '/' and '/*' both -> 'location /') are the SAME route — keying on
+// this prevents duplicate location blocks (which make the config invalid).
+export function locKey(path) { return pathToLocation(path).directive; }
+
 // One location block (4-space server indent).
 export function renderRouteBlock(route) {
   const { directive } = pathToLocation(route.path);
@@ -84,9 +89,11 @@ export function renderRouteBlock(route) {
   ].join('\n');
 }
 
-// Full file for a domain (root route emitted last so it reads as the fallback).
+// Full file for a domain (HTTP/80 only; root route emitted last so it reads as the fallback).
 export function renderDomain({ domain, routes }) {
-  const sorted = [...routes].sort((a, b) => (normPath(a.path) === '/' ? 1 : normPath(b.path) === '/' ? -1 : 0));
+  const byLoc = new Map();
+  for (const r of routes) byLoc.set(locKey(r.path), r); // dedupe equivalent locations (last wins)
+  const sorted = [...byLoc.values()].sort((a, b) => (normPath(a.path) === '/' ? 1 : normPath(b.path) === '/' ? -1 : 0));
   const blocks = sorted.map(renderRouteBlock).join('\n\n');
   return `# managed-by: nginx-managed
 # domain: ${domain}
@@ -94,8 +101,6 @@ export function renderDomain({ domain, routes }) {
 # everything else (including hand-added location blocks) is preserved.
 server {
     listen 80;
-    listen 443 ssl;
-    http2 on;
 
     server_name ${domain};  ${M_SERVERNAME}
 
@@ -146,22 +151,22 @@ export function mergeDomain(existing, { domain, routes }) {
   const hasMarkers = lines.some((l) => reRoute.test(l) || reUpstream.test(l) || reServerName.test(l));
   if (!hasMarkers) return { manual: true, changed: false, content: existing };
 
-  const byPath = new Map(routes.map((r) => [normPath(r.path), r]));
+  const byKey = new Map(routes.map((r) => [locKey(r.path), r])); // keyed by location directive
   const present = new Set();
   let changed = false;
-  let curPath = null;
+  let curKey = null;
   let curActive = 'primary';
   const mark = (was, next) => { if (next !== was) changed = true; return next; };
 
   const out = lines.map((line) => {
     const indent = (line.match(/^\s*/) || [''])[0];
     if (reServerName.test(line)) return mark(line, `${indent}server_name ${domain};  ${M_SERVERNAME}`);
-    if (reRoute.test(line)) { curPath = normPath(markerVal(line, 'route') || '/'); present.add(curPath); curActive = 'primary'; return line; }
+    if (reRoute.test(line)) { curKey = locKey(markerVal(line, 'route') || '/'); present.add(curKey); curActive = 'primary'; return line; }
     // legacy single-location file: treat as root route
-    if (curPath === null && (rePrimary.test(line) || reUpstream.test(line)) && byPath.has('/')) { curPath = '/'; present.add('/'); }
+    if (curKey === null && (rePrimary.test(line) || reUpstream.test(line)) && byKey.has('location /')) { curKey = 'location /'; present.add('location /'); }
 
-    if (curPath !== null && byPath.has(curPath)) {
-      const r = byPath.get(curPath);
+    if (curKey !== null && byKey.has(curKey)) {
+      const r = byKey.get(curKey);
       const newPrimary = `${r.address}:${r.port}`;
       const newAlt = r.altAddress ? `${r.altAddress}:${r.altPort}` : '';
       if (rePrimary.test(line)) return mark(line, `${indent}${M_PRIMARY} ${newPrimary}`);
@@ -173,7 +178,10 @@ export function mergeDomain(existing, { domain, routes }) {
   });
 
   let content = out.join('\n');
-  const newRoutes = routes.filter((r) => !present.has(normPath(r.path)));
+  // append routes not already present, deduped by location directive
+  const seen = new Set(present);
+  const newRoutes = [];
+  for (const r of routes) { const k = locKey(r.path); if (seen.has(k)) continue; seen.add(k); newRoutes.push(r); }
   if (newRoutes.length) {
     content = insertBeforeServerClose(content, newRoutes.map((r) => `\n${renderRouteBlock(r)}\n`).join(''));
     changed = true;

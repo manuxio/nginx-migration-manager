@@ -6,9 +6,8 @@ an infrastructure migration, one host or one batch at a time, with instant rollb
 
 It runs as two Docker containers:
 
-- **nginx** — hardened reverse proxy on 80/443 with a self-signed cert generated at first
-  start. Secure by default; per-host configs are permissive (websockets, large bodies, long
-  timeouts).
+- **nginx** — hardened reverse proxy on **port 80 (HTTP only)**. Secure by default; per-host
+  configs are permissive (websockets, large bodies, long timeouts).
 - **app** — a Node/Express + React admin UI (the *migration cockpit*) that turns a CSV into
   one nginx host file per domain, flips each host between backend A and B, and commits every
   change to git for a full audit trail and rollback.
@@ -22,12 +21,12 @@ ever mass-deleted; a CSV that omits a domain leaves it untouched.
 ## Quick start
 
 ```bash
-cp .env.example .env          # set credentials (and ports if 80/443/3000 are taken)
+cp .env.example .env          # set credentials (and ports if 80/3000 are taken)
 docker compose up -d --build
 ```
 
 - **Admin UI:** <http://localhost:3000> (basic auth — `admin` / `changeme` by default)
-- **Proxy:** <http://localhost> and <https://localhost> (self-signed → the browser warning is expected)
+- **Proxy:** <http://localhost> (HTTP only)
 
 Load `examples/test-10-hosts.csv` from the UI (Import → Preview → Apply) to try it.
 
@@ -60,13 +59,12 @@ GitHub package settings.)
 | Variable | Default | Purpose |
 |---|---|---|
 | `HTTP_PORT` | `80` | host port → nginx :80 |
-| `HTTPS_PORT` | `443` | host port → nginx :443 |
 | `APP_PORT` | `3000` | host port → admin UI :3000 |
-| `CERT_CN` | `localhost` | CN / primary SAN of the self-signed cert |
 | `BASIC_AUTH_USER` | `admin` | admin UI user (empty = auth disabled) |
 | `BASIC_AUTH_PASS` | `changeme` | admin UI password |
 
-Container ports are fixed (nginx 80/443, app 3000); only the **host** mapping is configurable.
+Container ports are fixed (nginx 80, app 3000); only the **host** mapping is configurable.
+nginx is HTTP only — it no longer listens on 443.
 
 ## CSV format
 
@@ -168,10 +166,8 @@ docker compose restart nginx                  # full restart (drops connections)
 
 ## Security notes
 
-- nginx: `server_tokens off`, TLS 1.2/1.3 + modern ciphers, slowloris timeouts, and a default
+- nginx: HTTP only (port 80, no TLS), `server_tokens off`, slowloris timeouts, and a default
   server returning `444` for any unknown `Host` (only configured domains are served).
-- **HSTS is off** deliberately — with a self-signed cert it would lock browsers out. Enable it
-  in `nginx/snippets/ssl.conf` only after moving to CA-signed certs.
 - The admin app is the component that writes nginx config, so the CSV is validated strictly
   (hostname/IPv4 only, no path traversal) and hand edits are BOM-stripped. It assumes a
   trusted network — keep `APP_PORT` off the public internet and behind basic auth.

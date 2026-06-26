@@ -16,6 +16,8 @@ const api = {
   setUpstream: (domain, path, which, value) => post('/api/host/upstream', { domain, path, which, value }),
   rename: (domain, newDomain) => post('/api/host/rename', { domain, newDomain }),
   renameRoute: (domain, path, newPath) => post('/api/host/route', { domain, path, newPath }),
+  addHost: (domain) => post('/api/host/add', { domain }),
+  addRoute: (domain, path) => post('/api/host/route/add', { domain, path }),
   enable: (domain) => post('/api/enable', { domain }),
   disable: (domain) => post('/api/disable', { domain }),
   del: (domain) => post('/api/host/delete', { domain }),
@@ -40,6 +42,10 @@ export default function App() {
 
   const [editCell, setEditCell] = useState(null); // `${file}|${path}|${which}`
   const [editVal, setEditVal] = useState('');
+  const [addingHost, setAddingHost] = useState(false);
+  const [hostInput, setHostInput] = useState('');
+  const [addPathFor, setAddPathFor] = useState(null); // host.file
+  const [pathInput, setPathInput] = useState('');
   const [peek, setPeek] = useState(null);
   const [editContent, setEditContent] = useState('');
   const [saveMsg, setSaveMsg] = useState(null);
@@ -160,6 +166,20 @@ export default function App() {
     await run(() => api.switchBulk(items, target));
   }
 
+  // add a new host (default root route 127.0.0.1:80) / add a path to a host
+  async function createHost() {
+    const d = hostInput.trim().toLowerCase();
+    setAddingHost(false); setHostInput('');
+    if (!d) return;
+    await run(() => api.addHost(d).then((r) => { if (r && r.error) window.alert(`Add host failed: ${r.error}`); }));
+  }
+  async function createPath(host) {
+    const p = pathInput.trim();
+    setAddPathFor(null); setPathInput('');
+    if (!p) return;
+    await run(() => api.addRoute(host.domain, p).then((r) => { if (r && r.error) window.alert(`Add path failed: ${r.error}`); }));
+  }
+
   async function openPeek(domain) {
     setBusy(true);
     try { const p = await api.host(domain); setPeek(p); setEditContent(p.content || ''); setSaveMsg(null); }
@@ -274,7 +294,16 @@ export default function App() {
           <span className="muted right">{filteredRoutes.length} routes shown</span>
         </div>
         <div className="bar" style={{ marginBottom: 10 }}>
-          <span className="muted">Bulk ({filteredRoutes.filter((x) => x.host.managed).length} filtered routes):</span>
+          {addingHost
+            ? <span className="row" style={{ gap: 6 }}>
+                <input className="cellinput" autoFocus placeholder="new.example.com" value={hostInput}
+                  onChange={(e) => setHostInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') createHost(); else if (e.key === 'Escape') { setAddingHost(false); setHostInput(''); } }} />
+                <button className="sm" onClick={createHost} disabled={busy}>Add host</button>
+                <button className="ghost sm" onClick={() => { setAddingHost(false); setHostInput(''); }}>Cancel</button>
+              </span>
+            : <button className="ghost" onClick={() => setAddingHost(true)} disabled={busy}>+ Add host</button>}
+          <span className="muted">·  Bulk ({filteredRoutes.filter((x) => x.host.managed).length} filtered routes):</span>
           <button onClick={() => bulk('alt')} disabled={busy}>Cut over → B</button>
           <button className="ghost" onClick={() => bulk('primary')} disabled={busy}>Roll back → A</button>
           <a className="right" href="/api/download-all"><button className="ghost sm">Download all (.tar.gz)</button></a>
@@ -300,6 +329,7 @@ export default function App() {
                       <span className="row" style={{ gap: 6, marginLeft: 'auto' }}>
                         <button className="ghost sm" title="switch ALL routes to backend A" disabled={busy || !g.host.managed || !g.host.routes.some((r) => r.active === 'alt')} onClick={() => hostSwitch(g.host, 'primary')}>→ A</button>
                         <button className="ghost sm" title="switch ALL routes to backend B" disabled={busy || !g.host.managed || !g.host.routes.some((r) => r.alt && r.active === 'primary')} onClick={() => hostSwitch(g.host, 'alt')}>→ B</button>
+                        <button className="ghost sm" title="add a path/route to this host" disabled={busy || !g.host.managed} onClick={() => { setAddPathFor(g.host.file); setPathInput(''); }}>+ path</button>
                         <button className="ghost sm" onClick={() => openPeek(g.host.domain)}>Peek / edit file</button>
                         <a className="sm" href={`/api/download?domain=${encodeURIComponent(g.host.domain)}`}><button className="ghost sm">↓</button></a>
                         {g.host.enabled
@@ -310,6 +340,20 @@ export default function App() {
                     </div>
                   </td>
                 </tr>
+                {addPathFor === g.host.file && (
+                  <tr className="domainrow">
+                    <td colSpan={5} style={{ paddingLeft: 22 }}>
+                      <span className="row" style={{ gap: 6 }}>
+                        <input className="cellinput" autoFocus placeholder="/path/* (or / for whole site)" value={pathInput}
+                          onChange={(e) => setPathInput(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') createPath(g.host); else if (e.key === 'Escape') { setAddPathFor(null); setPathInput(''); } }} />
+                        <button className="sm" onClick={() => createPath(g.host)} disabled={busy}>Add path</button>
+                        <button className="ghost sm" onClick={() => { setAddPathFor(null); setPathInput(''); }}>Cancel</button>
+                        <span className="muted">new route → 127.0.0.1:80, no Backend B</span>
+                      </span>
+                    </td>
+                  </tr>
+                )}
                 {g.routes.map((route) => (
                   <tr key={route.path} style={{ opacity: g.host.enabled ? 1 : 0.5 }}>
                     <td style={{ paddingLeft: 22 }}>

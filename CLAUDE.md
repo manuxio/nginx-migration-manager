@@ -33,10 +33,11 @@ reverse-proxy hosts, with a small web UI to manage them.
    **not** remove it. Single-host delete IS allowed as a deliberate per-host action (GUI
    Delete button / `POST /api/host/delete`); it's committed to git, so an accidental delete
    is recoverable via Rollback. Never add a bulk/mass delete path.
-4. **nginx is secure by default; hosts are permissive.** Server-level hardening (TLS,
-   timeouts, `server_tokens off`, default-deny unknown `Host`) lives in `nginx.conf` and
-   shared snippets. Per-host files stay permissive (websockets, large bodies, long
-   timeouts, no restrictive response headers) so they "just work."
+4. **nginx is HTTP only (port 80), secure by default; hosts are permissive.** Server-level
+   hardening (slowloris timeouts, `server_tokens off`, default-deny unknown `Host` → 444) lives
+   in `nginx.conf`. nginx does NOT listen on 443 — generated host files use `listen 80;` only
+   (no `listen 443 ssl`, no cert). Per-host files stay permissive (websockets, large bodies,
+   long timeouts) so they "just work."
 5. **The app never needs the Docker socket.** All nginx interaction goes through a file
    watcher inside the nginx container via the shared volume. Keep it that way.
 6. **Manual reload — changes are NOT auto-applied.** On any host-file change the watcher runs

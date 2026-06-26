@@ -5,10 +5,7 @@ services:
     container_name: nginx-managed-proxy
     restart: unless-stopped
     ports:
-      - "${HTTP_PORT:-80}:80"
-      - "${HTTPS_PORT:-443}:443"
-    environment:
-      - CERT_CN=${CERT_CN:-localhost}
+      - "${HTTP_PORT:-80}:80"   # HTTP only — nginx no longer listens on 443
     volumes:
       # Whole nginx config on the host. Empty on first boot -> the container seeds it from
       # the image's baked-in defaults (see nginx/entrypoint.sh). Edit files here directly.

@@ -11,7 +11,7 @@ import {
 import { ensureRepo, history, commitAll, rollbackTo, headShort } from './gitStore.js';
 import {
   listHosts, existingFileFor, switchRoute, setEnabled, writeHostFile, splitHostPort, parseDomain, deleteHost,
-  mergeDomain, normPath, setServerName, renameRoute, confPath,
+  mergeDomain, normPath, setServerName, renameRoute, confPath, renderDomain, locKey,
 } from './nginxHost.js';
 import { forgetHost } from './manifest.js';
 import { isValidDomain, isValidPath, isValidAddress, normalizePort } from './validate.js';
@@ -165,6 +165,36 @@ app.post('/api/host/upstream', (req, res) => {
   res.json({ domain, path: route, which, changed: merged.changed, value: newVal });
 });
 
+// Add a new host with a default root route -> 127.0.0.1:80, no Backend B.
+app.post('/api/host/add', (req, res) => {
+  const domain = String(req.body?.domain || '').trim().toLowerCase();
+  if (!isValidDomain(domain)) return res.status(400).json({ error: 'invalid domain' });
+  if (existingFileFor(domain)) return res.status(400).json({ error: `host ${domain} already exists` });
+  const route = { path: '/', address: '127.0.0.1', port: 80, altAddress: '', altPort: '' };
+  writeHostFile(confPath(domain), renderDomain({ domain, routes: [route] }));
+  commitAll(`add host ${domain}`);
+  res.json({ domain, changed: true });
+});
+
+// Add a new route (path) to an existing host -> 127.0.0.1:80, no Backend B.
+app.post('/api/host/route/add', (req, res) => {
+  const domain = String(req.body?.domain || '').trim().toLowerCase();
+  let path = String(req.body?.path ?? '').trim();
+  if (path !== '' && path !== '/' && !path.startsWith('/')) path = `/${path}`;
+  path = normPath(path);
+  if (!isValidDomain(domain)) return res.status(400).json({ error: 'invalid domain' });
+  if (!isValidPath(path === '/' ? '' : path)) return res.status(400).json({ error: 'invalid path (use /path or /path/*)' });
+  const file = existingFileFor(domain);
+  if (!file) return res.status(404).json({ error: 'no such host' });
+
+  const existing = fs.readFileSync(file, 'utf8');
+  if (parseDomain(existing).routes.some((r) => locKey(r.path) === locKey(path))) return res.status(400).json({ error: `route ${path} already exists (same location as another route)` });
+  const merged = mergeDomain(existing, { domain, routes: [{ path, address: '127.0.0.1', port: 80, altAddress: '', altPort: '' }] });
+  if (merged.manual) return res.status(400).json({ error: 'host is hand-authored (no managed markers)' });
+  if (merged.changed) { writeHostFile(file, merged.content); commitAll(`add route ${domain} ${path}`); }
+  res.json({ domain, path, changed: merged.changed });
+});
+
 // Rename a host: rename the file (.conf/.conf.disabled) and rewrite its server_name.
 app.post('/api/host/rename', (req, res) => {
   const domain = String(req.body?.domain || '').trim().toLowerCase();
@@ -200,7 +230,7 @@ app.post('/api/host/route', (req, res) => {
   const existing = fs.readFileSync(file, 'utf8');
   const routes = parseDomain(existing).routes;
   if (!routes.some((r) => normPath(r.path) === oldPath)) return res.status(404).json({ error: 'no such route' });
-  if (newPath !== oldPath && routes.some((r) => normPath(r.path) === newPath)) return res.status(400).json({ error: `route ${newPath} already exists` });
+  if (locKey(newPath) !== locKey(oldPath) && routes.some((r) => locKey(r.path) === locKey(newPath))) return res.status(400).json({ error: `route ${newPath} already exists (same location as another route)` });
 
   const r = renameRoute(existing, oldPath, newPath);
   if (r.error) return res.status(400).json({ error: r.error });
