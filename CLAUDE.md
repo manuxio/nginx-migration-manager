@@ -31,11 +31,15 @@ reverse-proxy hosts, with a small web UI to manage them.
    timeouts, `server_tokens off`, default-deny unknown `Host`) lives in `nginx.conf` and
    shared snippets. Per-host files stay permissive (websockets, large bodies, long
    timeouts, no restrictive response headers) so they "just work."
-5. **The app never needs the Docker socket.** Reloads happen via a file watcher inside the
-   nginx container (`inotifywait` → `nginx -t && nginx -s reload`). Keep it that way.
-6. **Validate before reload.** A broken hand edit must not take nginx down. The watcher
-   runs `nginx -t` and only reloads on success, otherwise keeps the last-good config and
-   records the error.
+5. **The app never needs the Docker socket.** All nginx interaction goes through a file
+   watcher inside the nginx container via the shared volume. Keep it that way.
+6. **Manual reload — changes are NOT auto-applied.** On any host-file change the watcher runs
+   `nginx -t` and marks the config **pending** (`.pending`), but does **not** reload. nginx
+   reloads only on an explicit `.reload-request` (the UI "Reload nginx" button →
+   `POST /api/reload`), which validates, applies, and clears pending. A failed `nginx -t`
+   never reaches a reload, so a broken edit can't take nginx down — it just stays pending
+   with the error shown. This lets an operator stage a batch of cutovers, confirm the config
+   test passes, then apply them all with one reload.
 
 ## Layout
 
@@ -44,7 +48,8 @@ docker-compose.yml
 nginx/
   Dockerfile
   entrypoint.sh                 # generate cert if missing, start watcher, exec nginx
-  watcher.sh                    # inotifywait on sites/ -> nginx -t && reload, write status
+  watcher.sh                    # inotifywait: on change -> nginx -t + set .pending (NO reload);
+                                #              reload only on .reload-request (clears pending)
   nginx.conf                    # hardened http{} + default-deny server (444)
   snippets/
     ssl.conf                    # TLS 1.2/1.3, modern ciphers, session cache
@@ -136,19 +141,21 @@ App API (served on :3000):
 - `POST /api/switch`   `{domain, target?}` → forward to primary/alt (omit target = toggle)
 - `POST /api/switch-bulk` `{domains:[…], target}` → batch cutover; unswitchable hosts reported, not fatal
 - `GET  /api/host?domain=…` → raw `.conf` text + parsed A/B/active (the in-GUI peek/editor)
-- `POST /api/host/save` `{domain, content}` → write a hand edit, commit a checkpoint, re-test
-  (strips a leading BOM; the in-GUI editor for fixing a file `nginx -t` rejected)
+- `POST /api/host/save` `{domain, content}` → write a hand edit, commit a checkpoint, run
+  `nginx -t`; BOM-stripped. The edit becomes **pending** (not applied until reload).
+- `GET  /api/status` → `{ reload:{ok,message}, test:{ok,message}, pending }` — what's serving,
+  the config-test of the pending changes, and whether a reload is owed.
 - `GET  /api/history` → last 50 commits `[{hash, date, message}]` (date = ISO + tz)
 - `POST /api/rollback` `{hash}` → **`git reset --hard`** to that checkpoint (discards all later
-  changes; recoverable via `git reflog` until gc)
+  changes; recoverable via `git reflog` until gc). Becomes pending like any other change.
 - `POST /api/config-test` → run `nginx -t` on demand (no reload) → `{ok, message}`
-- `POST /api/reload` → ask the watcher to validate + reload (writes `.reload-request`)
+- `POST /api/reload` → **explicitly apply** the pending config (writes `.reload-request`;
+  validates, reloads, clears pending) → `{ok, message}`
 - `POST /api/enable` / `POST /api/disable`  `{domain}` → rename `.conf` ↔ `.conf.disabled`
 - `POST /api/host/delete` `{domain}` → delete one host file + commit (single-host only; git-recoverable)
 - `GET  /api/download?domain=…`  → one host's live `.conf`
 - `GET  /api/download-all` → `.tar.gz` of all live host files (uses `tar` in the app image)
 - `GET  /api/export`   → CSV of current hosts (5 columns, parsed from the live files)
-- `POST /api/reload`   → touch trigger (watcher does the actual reload)
 
 ## Conventions
 

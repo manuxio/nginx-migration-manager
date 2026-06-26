@@ -16,3 +16,4 @@ export const RELOAD_REQUEST = path.join(SITES_DIR, '.reload-request');
 export const TEST_OK = path.join(SITES_DIR, '.test-ok');
 export const TEST_MSG = path.join(SITES_DIR, '.test-msg');
 export const TEST_REQUEST = path.join(SITES_DIR, '.test-request');
+export const PENDING = path.join(SITES_DIR, '.pending');

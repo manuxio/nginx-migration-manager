@@ -88,14 +88,18 @@ The host table is the workspace:
 - **Filter** — search by host / backend A / backend B, plus status chips (on A, on B,
   disabled, no B). Bulk actions act on exactly the **filtered** set.
 - **Cut over → B / Roll back → A** — bulk-switch every filtered host in one click; hosts with
-  no B are skipped and reported.
-- **→ A / → B** (per host) — flip one host's `proxy_pass`. The choice is **sticky**:
+  no B are skipped and reported. **Staged, not applied** (see Reload below).
+- **→ A / → B** (per host) — stage a flip of one host's `proxy_pass`. The choice is **sticky**:
   re-importing the CSV refreshes addresses but never undoes a cutover.
 - **Disable / Enable** — pause a host (`.conf` ↔ `.conf.disabled`) without deleting.
 - **Peek / Edit** — view *and hand-edit* a host's live `.conf` in-app; Save commits a
-  checkpoint and re-runs `nginx -t`, reporting pass/fail immediately.
+  checkpoint and runs `nginx -t`, reporting pass/fail immediately (pending until you reload).
 - **Delete** — remove a single host (committed → recoverable via Rollback). No bulk delete.
 - **Test config** — run `nginx -t` on demand (no reload) and show the result.
+- **Reload nginx** — changes are **not auto-applied**: every change runs `nginx -t` and turns
+  the **Reload** button amber to flag pending changes. Click it to apply them all at once
+  (zero-downtime). This lets you stage a whole batch, confirm the config test is green, then
+  cut over with a single deliberate reload.
 - **Download** one `.conf`, **Download all** as `.tar.gz`, or **Export CSV** (round-trips).
 
 ## How hand edits are respected
@@ -118,9 +122,10 @@ treated as fully hand-authored and never touched. Delete a marker to pin that li
 
 ## Safety: validate, reload, audit, rollback
 
-- A watcher inside the nginx container runs `nginx -t` before every reload. A broken file
-  (or a bad hand edit) is **not** applied — the last-good config stays live and the error is
-  surfaced in the UI, one click from the in-app editor.
+- **Manual reload.** Changes are never auto-applied. A watcher inside the nginx container
+  runs `nginx -t` on every change and marks the config *pending*; nginx reloads only when you
+  click **Reload nginx**. A broken file (or bad hand edit) fails the test, stays pending, and
+  is surfaced in the UI one click from the in-app editor — it can't take the proxy down.
 - Every change (import, cutover, enable/disable, edit, delete) is committed to a git repo in
   the config volume. The **History** panel shows the last 50 commits with timestamps.
 - **Rollback** restores the whole config to a chosen checkpoint and **discards everything
@@ -130,7 +135,7 @@ treated as fully hand-authored and never touched. Delete a marker to pin that li
 
 ## Reloading nginx from the host
 
-The watcher reloads automatically on any file change. To force it:
+Normally you reload from the UI (**Reload nginx**). To do it directly on the host:
 
 ```bash
 docker compose exec nginx nginx -t            # validate
@@ -150,7 +155,9 @@ docker compose restart nginx                  # full restart (drops connections)
 | `POST /api/host/delete` `{domain}` | delete one host (committed) |
 | `GET /api/host?domain=…` | raw `.conf` + parsed metadata (peek/editor) |
 | `POST /api/host/save` `{domain,content}` | save a hand edit, commit, re-test |
-| `GET /api/config-test` · `POST /api/config-test` | run `nginx -t` (no reload) |
+| `GET /api/status` | `{reload, test, pending}` — serving status, pending test, reload owed |
+| `POST /api/config-test` | run `nginx -t` on demand (no reload) |
+| `POST /api/reload` | apply the pending config (validate + reload, clear pending) |
 | `GET /api/download?domain=…` · `GET /api/download-all` | download config(s) |
 | `GET /api/export` | hosts → CSV |
 | `GET /api/history` · `POST /api/rollback` `{hash}` | git log / checkpoint rollback |

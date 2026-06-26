@@ -6,7 +6,7 @@ import express from 'express';
 
 import {
   PORT, AUTH_USER, AUTH_PASS, SITES_DIR,
-  RELOAD_OK, RELOAD_MSG, RELOAD_REQUEST, TEST_OK, TEST_MSG, TEST_REQUEST,
+  RELOAD_OK, RELOAD_MSG, RELOAD_REQUEST, TEST_OK, TEST_MSG, TEST_REQUEST, PENDING,
 } from './config.js';
 import { ensureRepo, history, commitAll, rollbackTo } from './gitStore.js';
 import {
@@ -53,8 +53,13 @@ app.get('/api/hosts', (req, res) => {
 
 app.get('/api/status', (req, res) => {
   const read = (f) => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
-  const ok = read(RELOAD_OK);
-  res.json({ ok: ok === '1', known: ok !== '', message: read(RELOAD_MSG) || 'no reload yet' });
+  const ro = read(RELOAD_OK);
+  const to = read(TEST_OK);
+  res.json({
+    reload: { ok: ro === '1', known: ro !== '', message: read(RELOAD_MSG) || 'no reload yet' },
+    test: { ok: to === '1', known: to !== '', message: read(TEST_MSG) || '' },
+    pending: read(PENDING) === '1',
+  });
 });
 
 app.get('/api/history', (req, res) => {
@@ -189,14 +194,12 @@ app.get('/api/download-all', (req, res) => {
   }
 });
 
-// Nudge the nginx watcher to re-validate + reload (it also reloads on any file change).
-app.post('/api/reload', (req, res) => {
-  try {
-    fs.writeFileSync(RELOAD_REQUEST, String(Date.now()));
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ error: String((e && e.message) || e) });
-  }
+// Explicit reload: apply the pending config. Returns the reload result.
+app.post('/api/reload', async (req, res) => {
+  const before = _mtime(RELOAD_OK);
+  try { fs.writeFileSync(RELOAD_REQUEST, String(Date.now())); }
+  catch (e) { return res.status(500).json({ error: String((e && e.message) || e) }); }
+  res.json(await pollResult(RELOAD_OK, RELOAD_MSG, before, 8000, 'config valid — reloaded', 'reload failed — last-good kept'));
 });
 
 // Poll a watcher result file (.test-ok / .reload-ok) for a value fresher than `before`.
@@ -226,7 +229,7 @@ app.post('/api/config-test', async (req, res) => {
 });
 
 // Hand-edit a host's config from the GUI: write it, commit a checkpoint, and report the
-// reload result (the file write itself triggers the watcher's validate+reload).
+// CONFIG-TEST result. The edit is NOT applied until the user reloads (it becomes pending).
 app.post('/api/host/save', async (req, res) => {
   const domain = String(req.body?.domain || '').trim().toLowerCase();
   if (!isValidDomain(domain)) return res.status(400).json({ error: 'invalid domain' });
@@ -234,15 +237,15 @@ app.post('/api/host/save', async (req, res) => {
   if (typeof content !== 'string' || !content.trim()) return res.status(400).json({ error: 'empty content' });
   const file = existingFileFor(domain);
   if (!file) return res.status(404).json({ error: 'no such host' });
-  const before = _mtime(RELOAD_OK);
+  const before = _mtime(TEST_OK);
   try {
     writeHostFile(file, content.replace(/^﻿/, '')); // strip BOM (Windows editors)
     commitAll(`hand edit ${domain}`);
   } catch (e) {
     return res.status(500).json({ error: String((e && e.message) || e) });
   }
-  const t = await pollResult(RELOAD_OK, RELOAD_MSG, before, 8000, 'config valid — reloaded', 'config invalid — last-good kept');
-  res.json({ saved: true, ok: t.ok, message: t.message });
+  const t = await pollResult(TEST_OK, TEST_MSG, before, 8000, 'config valid', 'config test failed');
+  res.json({ saved: true, pending: true, ok: t.ok, message: t.message });
 });
 
 // ------------------------------------------------------------- static UI + boot

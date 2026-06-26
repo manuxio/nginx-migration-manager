@@ -54,7 +54,12 @@ export default function App() {
   }, []);
   useEffect(() => { refresh(); }, [refresh]);
 
-  async function run(fn) { setBusy(true); try { await fn(); await refresh(); } finally { setBusy(false); } }
+  async function run(fn) {
+    setBusy(true);
+    try { await fn(); await refresh(); } finally { setBusy(false); }
+    // The watcher runs nginx -t ~1s after a file change; pick up the pending flag + test result.
+    setTimeout(refresh, 1400);
+  }
 
   const summary = useMemo(() => {
     const onA = hosts.filter((h) => h.enabled && h.active === 'primary').length;
@@ -149,10 +154,22 @@ export default function App() {
       <p className="sub">Cut hosts from <b>backend A</b> (address) to <b>backend B</b> (alt_address). Hand edits preserved · no mass delete.</p>
 
       {status && (
-        <div className={`banner ${status.ok ? 'ok' : 'fail'}`}>
-          {status.ok ? '✓ nginx config valid — ' : '✗ nginx reload problem — '}{status.message}
-          {!status.ok && brokenDomain(status.message) && (
-            <>{' '}<button className="ghost sm" onClick={() => openPeek(brokenDomain(status.message))}>Edit {brokenDomain(status.message)}.conf</button></>
+        <div className={`banner ${status.reload.ok ? 'ok' : 'fail'}`}>
+          {status.reload.ok ? '✓ nginx serving — ' : '✗ nginx reload problem — '}{status.reload.message}
+          {!status.reload.ok && brokenDomain(status.reload.message) && (
+            <>{' '}<button className="ghost sm" onClick={() => openPeek(brokenDomain(status.reload.message))}>Edit {brokenDomain(status.reload.message)}.conf</button></>
+          )}
+        </div>
+      )}
+
+      {status && status.pending && (
+        <div className={`banner ${status.test.ok ? 'warn' : 'fail'}`} style={{ whiteSpace: 'pre-wrap' }}>
+          ⚠ Unreloaded changes pending. <b>nginx -t:</b>{' '}
+          {status.test.ok
+            ? 'valid ✓ — click “Reload nginx” to apply.'
+            : <>FAILED ✗ — fix before reloading.{'\n'}{status.test.message}</>}
+          {!status.test.ok && brokenDomain(status.test.message) && (
+            <>{'\n'}<button className="ghost sm" onClick={() => openPeek(brokenDomain(status.test.message))}>Edit {brokenDomain(status.test.message)}.conf</button></>
           )}
         </div>
       )}
@@ -169,7 +186,14 @@ export default function App() {
           </div>
           <button className="ghost" onClick={() => run(async () => {})} disabled={busy}>Refresh</button>
           <button className="ghost" onClick={testConfig} disabled={busy}>Test config</button>
-          <button className="ghost" onClick={() => run(api.reload)} disabled={busy}>Reload nginx</button>
+          <button
+            className={status?.pending ? 'warn' : 'ghost'}
+            onClick={() => run(api.reload)}
+            disabled={busy}
+            title={status?.pending ? 'Pending changes are not live until you reload' : 'Nothing pending'}
+          >
+            {status?.pending ? 'Reload nginx ●' : 'Reload nginx'}
+          </button>
         </div>
         {testResult && (
           <div className={`banner ${testResult.ok ? 'ok' : 'fail'}`} style={{ marginTop: 12, marginBottom: 0, whiteSpace: 'pre-wrap' }}>
@@ -300,12 +324,12 @@ export default function App() {
             <textarea className="editor" value={editContent} spellCheck={false} onChange={(e) => setEditContent(e.target.value)} />
             <div className="row" style={{ marginTop: 10 }}>
               <button onClick={saveHost} disabled={busy || editContent === peek.content}>Save &amp; commit</button>
-              <span className="muted">Saving writes the file, commits a checkpoint, then runs nginx -t.</span>
+              <span className="muted">Saving writes the file, commits a checkpoint, and runs nginx -t. It is not applied until you Reload.</span>
             </div>
             {saveMsg && (saveMsg.error
               ? <div className="banner fail" style={{ marginTop: 10 }}>{saveMsg.error}</div>
-              : <div className={`banner ${saveMsg.ok ? 'ok' : 'fail'}`} style={{ marginTop: 10, whiteSpace: 'pre-wrap' }}>
-                  Saved &amp; committed. <b>nginx -t:</b> {saveMsg.ok === true ? 'valid ✓' : saveMsg.ok === null ? 'unknown' : 'FAILED ✗'}{'\n'}{saveMsg.message}
+              : <div className={`banner ${saveMsg.ok ? 'warn' : 'fail'}`} style={{ marginTop: 10, whiteSpace: 'pre-wrap' }}>
+                  Saved &amp; committed (pending reload). <b>nginx -t:</b> {saveMsg.ok === true ? 'valid ✓' : saveMsg.ok === null ? 'unknown' : 'FAILED ✗'}{'\n'}{saveMsg.message}
                 </div>
             )}
           </div>
