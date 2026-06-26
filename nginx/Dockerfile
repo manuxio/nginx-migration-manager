@@ -5,6 +5,7 @@ RUN apk add --no-cache openssl inotify-tools bash
 
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY snippets/ /etc/nginx/snippets/
+COPY error.html /etc/nginx/error.html
 COPY entrypoint.sh watcher.sh reload.sh /usr/local/bin/
 
 # Strip CR if the scripts were authored on Windows, then make executable.

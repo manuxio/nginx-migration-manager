@@ -124,6 +124,8 @@ server {
 
     server_name ${domain};  ${M_SERVERNAME}
 
+    include /etc/nginx/snippets/upstream-error.conf;  # static page when an upstream is down
+
 ${blocks}
 }
 `;

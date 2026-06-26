@@ -37,11 +37,20 @@ data:
             ''      close;
         }
 
-        # default: reject unknown Host (HTTP/80 only)
+        # serve /etc/nginx/error.html when an upstream is down (502/503/504). The serving
+        # location lives in snippets/upstream-error.conf, included per host at server scope.
+        proxy_intercept_errors on;
+        error_page 502 503 504 /__upstream_down.html;
+
+        # default: reject unknown Host (HTTP/80 only) + LB health check responder
         server {
             listen 80 default_server;
             server_name _;
-            return 444;
+            location = /healthz { access_log off; return 200 "ok\n"; }
+            location / {
+                if ($http_user_agent ~ "GoogleHC") { return 200 "ok\n"; }
+                return 444;
+            }
         }
 
         include /etc/nginx/sites/*.conf;
