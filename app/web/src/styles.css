@@ -24,6 +24,7 @@ button:disabled { opacity: .4; cursor: default; }
 textarea { width: 100%; min-height: 120px; background: #0f1115; color: #e6e6e6; border: 1px solid #262b36; border-radius: 6px; padding: 10px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #20242e; }
+tr.running > td { background: #112619; box-shadow: inset 3px 0 0 #6ee7a0; }
 th { color: #8a93a6; font-weight: 600; font-size: 12px; text-transform: uppercase; }
 code { font-family: ui-monospace, Menlo, Consolas, monospace; }
 .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; }
@@ -51,6 +52,7 @@ code { font-family: ui-monospace, Menlo, Consolas, monospace; }
 .progress > div { height: 100%; background: linear-gradient(90deg, #2d6cdf, #6ee7a0); }
 
 input.search, select { background: #0f1115; color: #e6e6e6; border: 1px solid #262b36; border-radius: 6px; padding: 7px 10px; font-size: 13px; }
+input.cellinput { background: #0f1115; color: #e6e6e6; border: 1px solid #2d6cdf; border-radius: 4px; padding: 2px 6px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; width: 100%; min-width: 130px; }
 input.search { min-width: 200px; }
 .chip { padding: 4px 11px; border-radius: 999px; border: 1px solid #262b36; background: #171a21; color: #cfd6e4; cursor: pointer; font-size: 12px; user-select: none; }
 .chip.active { background: #2d6cdf; border-color: #2d6cdf; color: #fff; }

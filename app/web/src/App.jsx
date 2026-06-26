@@ -13,6 +13,7 @@ const api = {
     fetch(`/api/import?apply=${apply}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ csv }) }).then((r) => r.json()),
   switch: (domain, target) => post('/api/switch', { domain, target }),
   switchBulk: (domains, target) => post('/api/switch-bulk', { domains, target }),
+  setUpstream: (domain, which, value) => post('/api/host/upstream', { domain, which, value }),
   enable: (domain) => post('/api/enable', { domain }),
   disable: (domain) => post('/api/disable', { domain }),
   del: (domain) => post('/api/host/delete', { domain }),
@@ -32,12 +33,15 @@ export default function App() {
   const [hosts, setHosts] = useState([]);
   const [status, setStatus] = useState(null);
   const [hist, setHist] = useState([]);
+  const [served, setServed] = useState('');
   const [busy, setBusy] = useState(false);
 
   const [q, setQ] = useState('');
   const [field, setField] = useState('any');
   const [statusFilter, setStatusFilter] = useState('all');
 
+  const [editCell, setEditCell] = useState(null); // `${file}:${which}` currently being edited
+  const [editVal, setEditVal] = useState('');
   const [peek, setPeek] = useState(null);
   const [editContent, setEditContent] = useState('');
   const [saveMsg, setSaveMsg] = useState(null);
@@ -51,6 +55,7 @@ export default function App() {
     setHosts(h.hosts || []);
     setStatus(s);
     setHist(hi.history || []);
+    setServed(hi.served || '');
   }, []);
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -88,6 +93,12 @@ export default function App() {
     });
   }, [hosts, q, field, statusFilter]);
 
+  // Index in `hist` of the commit nginx is currently serving (last reload). -1 if not found.
+  const runningIndex = useMemo(
+    () => hist.findIndex((c) => served && (c.hash.startsWith(served) || served.startsWith(c.hash))),
+    [hist, served],
+  );
+
   async function bulk(target) {
     const domains = filtered.filter((h) => h.managed).map((h) => h.domain);
     if (!domains.length) return;
@@ -99,6 +110,20 @@ export default function App() {
   async function del(domain) {
     if (!window.confirm(`Delete host ${domain}?\n\nThe .conf file is removed and the change is committed. If this was a mistake, restore it from the History panel — Rollback to the checkpoint just before this delete.`)) return;
     await run(() => api.del(domain));
+  }
+
+  // Inline edit of a Backend A/B cell (double-click).
+  function startEdit(h, which) {
+    setEditCell(`${h.file}:${which}`);
+    setEditVal((which === 'primary' ? h.primary : h.alt) || '');
+  }
+  async function commitEdit(h, which) {
+    if (editCell !== `${h.file}:${which}`) return;
+    const val = editVal.trim();
+    const orig = (which === 'primary' ? h.primary : h.alt) || '';
+    setEditCell(null);
+    if (val === orig) return; // unchanged
+    await run(() => api.setUpstream(h.domain, which, val).then((r) => { if (r && r.error) window.alert(`Edit failed: ${r.error}`); }));
   }
 
   async function openPeek(domain) {
@@ -238,8 +263,23 @@ export default function App() {
               return (
                 <tr key={h.file} style={{ opacity: h.enabled ? 1 : 0.5 }}>
                   <td><code>{h.domain}</code>{!h.managed && <> <Badge kind="manual">manual</Badge></>}</td>
-                  <td><code className={h.active === 'primary' ? 'cA' : 'muted'}>{h.primary || '—'}</code></td>
-                  <td><code className={h.active === 'alt' ? 'cB' : 'muted'}>{h.alt || '—'}</code></td>
+                  {['primary', 'alt'].map((which) => {
+                    const val = which === 'primary' ? h.primary : h.alt;
+                    const cls = h.active === which ? (which === 'primary' ? 'cA' : 'cB') : 'muted';
+                    return (
+                      <td key={which}>
+                        {editCell === `${h.file}:${which}`
+                          ? <input
+                              className="cellinput" autoFocus value={editVal}
+                              placeholder={which === 'alt' ? 'addr:port (blank = none)' : 'addr:port'}
+                              onChange={(e) => setEditVal(e.target.value)}
+                              onKeyDown={(e) => { if (e.key === 'Enter') commitEdit(h, which); else if (e.key === 'Escape') setEditCell(null); }}
+                              onBlur={() => commitEdit(h, which)}
+                            />
+                          : <code className={cls} title="double-click to edit" style={{ cursor: 'text' }} onDoubleClick={() => h.managed && startEdit(h, which)}>{val || '—'}</code>}
+                      </td>
+                    );
+                  })}
                   <td><Badge kind={h.active === 'alt' ? 'skip-manual' : 'managed'}>{liveLabel(h)}</Badge></td>
                   <td>{h.enabled ? <span className="muted">on</span> : <Badge kind="disabled">off</Badge>}</td>
                   <td>
@@ -260,7 +300,7 @@ export default function App() {
             {filtered.length === 0 && <tr><td colSpan={6} className="muted">No hosts match. {hosts.length === 0 ? 'Import a CSV below.' : ''}</td></tr>}
           </tbody>
         </table>
-        <p className="muted" style={{ marginTop: 8 }}>Delete removes a single host (committed — restore via Rollback). Disable pauses without deleting. Bulk import never deletes. A = primary/current, B = alt/target.</p>
+        <p className="muted" style={{ marginTop: 8 }}>Double-click a <b>Backend A/B</b> cell to edit it in place (Enter to save, Esc to cancel). Delete removes a single host (committed — restore via Rollback). Disable pauses without deleting. Bulk import never deletes. A = primary/current, B = alt/target.</p>
       </div>
 
       <div className="card">
@@ -293,21 +333,37 @@ export default function App() {
 
       <div className="card">
         <h2>Change history (git) — last 50 commits · every action is committed</h2>
-        <p className="muted" style={{ marginTop: -4 }}>Rollback restores the whole config to that checkpoint and <b>discards every change made after it</b>.</p>
+        <p className="muted" style={{ marginTop: -4 }}>
+          <span className="badge b-managed">● running</span> = the commit nginx is serving (last reload).{' '}
+          Anything <span className="badge b-skip-manual">pending</span> above it is committed but not live until you reload.{' '}
+          Rollback restores the whole config to that checkpoint and <b>discards every change after it</b>.
+        </p>
         <table>
           <thead><tr><th>Commit</th><th>Timestamp</th><th>Change</th><th>Action</th></tr></thead>
           <tbody>
-            {hist.map((c, i) => (
-              <tr key={c.hash}>
-                <td><code>{c.hash}</code>{i === 0 && <> <span className="muted">(current)</span></>}</td>
-                <td className="muted">{c.date}</td>
-                <td>{c.message}</td>
-                <td><button className="ghost sm" disabled={busy || i === 0} onClick={() => rollback(c)}>Rollback</button></td>
-              </tr>
-            ))}
+            {hist.map((c, i) => {
+              const isRunning = i === runningIndex;
+              const isPending = runningIndex >= 0 && i < runningIndex;
+              return (
+                <tr key={c.hash} className={isRunning ? 'running' : ''}>
+                  <td>
+                    <code>{c.hash}</code>
+                    {i === 0 && <> <span className="muted">(latest)</span></>}
+                    {isRunning && <> <Badge kind="managed">● running</Badge></>}
+                    {isPending && <> <Badge kind="skip-manual">pending</Badge></>}
+                  </td>
+                  <td className="muted">{c.date}</td>
+                  <td>{c.message}</td>
+                  <td><button className="ghost sm" disabled={busy || i === 0} onClick={() => rollback(c)}>Rollback</button></td>
+                </tr>
+              );
+            })}
             {hist.length === 0 && <tr><td colSpan={4} className="muted">No commits yet.</td></tr>}
           </tbody>
         </table>
+        {served && hist.length > 0 && runningIndex < 0 && (
+          <p className="muted">nginx is serving <code>{served}</code>, which isn’t in the last 50 commits (likely after a rollback) — reload to sync.</p>
+        )}
       </div>
 
       {peek && (

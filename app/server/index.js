@@ -6,14 +6,14 @@ import express from 'express';
 
 import {
   PORT, AUTH_USER, AUTH_PASS, SITES_DIR,
-  RELOAD_OK, RELOAD_MSG, RELOAD_REQUEST, TEST_OK, TEST_MSG, TEST_REQUEST, PENDING,
+  RELOAD_OK, RELOAD_MSG, RELOAD_REQUEST, TEST_OK, TEST_MSG, TEST_REQUEST, PENDING, SERVED_FILE,
 } from './config.js';
-import { ensureRepo, history, commitAll, rollbackTo } from './gitStore.js';
+import { ensureRepo, history, commitAll, rollbackTo, headShort } from './gitStore.js';
 import {
-  listHosts, existingFileFor, switchActive, setEnabled, writeHostFile, splitHostPort, parseHost, deleteHost,
+  listHosts, existingFileFor, switchActive, setEnabled, writeHostFile, splitHostPort, parseHost, deleteHost, mergeHost,
 } from './nginxHost.js';
 import { forgetHost } from './manifest.js';
-import { isValidDomain } from './validate.js';
+import { isValidDomain, isValidAddress, normalizePort } from './validate.js';
 import { toCsv } from './csv.js';
 import { importCsv } from './importer.js';
 
@@ -62,8 +62,16 @@ app.get('/api/status', (req, res) => {
   });
 });
 
+// The commit nginx is currently serving = HEAD at the last successful reload.
+function recordServed() {
+  try { fs.mkdirSync(path.dirname(SERVED_FILE), { recursive: true }); fs.writeFileSync(SERVED_FILE, headShort()); } catch { /* ignore */ }
+}
+function readServed() {
+  try { return fs.readFileSync(SERVED_FILE, 'utf8').trim(); } catch { return ''; }
+}
+
 app.get('/api/history', (req, res) => {
-  res.json({ history: history(50) });
+  res.json({ history: history(50), served: readServed(), head: headShort() });
 });
 
 // Roll the whole config back to a checkpoint commit (DESTRUCTIVE: discards later changes).
@@ -111,6 +119,48 @@ app.post('/api/switch', (req, res) => {
     commitAll(`switch ${domain} -> ${r.active} (${r.upstream})`);
   }
   res.json({ domain, active: r.active, upstream: r.upstream, changed: r.changed });
+});
+
+// Inline-edit one upstream (Backend A = primary, B = alt). value = "addr[:port]" ('' clears alt).
+// Reuses the marker merge: keeps the active selection sticky; proxy_pass follows the active one.
+app.post('/api/host/upstream', (req, res) => {
+  const domain = String(req.body?.domain || '').trim().toLowerCase();
+  const which = req.body?.which;
+  const value = String(req.body?.value ?? '').trim();
+  if (!isValidDomain(domain)) return res.status(400).json({ error: 'invalid domain' });
+  if (which !== 'primary' && which !== 'alt') return res.status(400).json({ error: 'which must be primary or alt' });
+  const file = existingFileFor(domain);
+  if (!file) return res.status(404).json({ error: 'no such host' });
+
+  const existing = fs.readFileSync(file, 'utf8');
+  const cur = parseHost(existing);
+  const p = splitHostPort(cur.primary);
+  const a = splitHostPort(cur.alt);
+  const row = {
+    domain,
+    address: p.address, port: p.port || 80,
+    altAddress: a.address, altPort: a.address ? (a.port || 80) : '',
+  };
+
+  if (which === 'alt' && value === '') { // clear backend B
+    row.altAddress = ''; row.altPort = '';
+  } else {
+    const v = splitHostPort(value);
+    const port = normalizePort(v.port);
+    if (!isValidAddress(v.address)) return res.status(400).json({ error: `invalid ${which} address` });
+    if (port === null) return res.status(400).json({ error: `invalid ${which} port` });
+    if (which === 'primary') { row.address = v.address; row.port = port; }
+    else { row.altAddress = v.address; row.altPort = port; }
+  }
+
+  const merged = mergeHost(existing, row);
+  if (merged.manual) return res.status(400).json({ error: 'host is hand-authored (no managed markers)' });
+  const newVal = which === 'primary' ? `${row.address}:${row.port}` : (row.altAddress ? `${row.altAddress}:${row.altPort}` : '(none)');
+  if (merged.changed) {
+    writeHostFile(file, merged.content);
+    commitAll(`edit ${which} ${domain} -> ${newVal}`);
+  }
+  res.json({ domain, which, changed: merged.changed, value: newVal });
 });
 
 // Peek: raw config file + parsed metadata for one host (for the in-GUI viewer).
@@ -197,9 +247,14 @@ app.get('/api/download-all', (req, res) => {
 // Explicit reload: apply the pending config. Returns the reload result.
 app.post('/api/reload', async (req, res) => {
   const before = _mtime(RELOAD_OK);
-  try { fs.writeFileSync(RELOAD_REQUEST, String(Date.now())); }
-  catch (e) { return res.status(500).json({ error: String((e && e.message) || e) }); }
-  res.json(await pollResult(RELOAD_OK, RELOAD_MSG, before, 8000, 'config valid — reloaded', 'reload failed — last-good kept'));
+  const fire = () => fs.writeFileSync(RELOAD_REQUEST, String(Date.now()));
+  try { fire(); } catch (e) { return res.status(500).json({ error: String((e && e.message) || e) }); }
+  // The one-shot watcher can miss a request that lands while it's mid-debounce on another
+  // change; if the first attempt times out, fire once more (the watcher is idle by then).
+  let r = await pollResult(RELOAD_OK, RELOAD_MSG, before, 3000, 'config valid — reloaded', 'reload failed — last-good kept');
+  if (r.ok === null) { try { fire(); } catch { /* ignore */ } r = await pollResult(RELOAD_OK, RELOAD_MSG, before, 6000, 'config valid — reloaded', 'reload failed — last-good kept'); }
+  if (r.ok === true) recordServed(); // nginx now serves the current HEAD
+  res.json(r);
 });
 
 // Poll a watcher result file (.test-ok / .reload-ok) for a value fresher than `before`.
@@ -253,4 +308,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 ensureRepo();
+// First boot: nginx loaded the current on-disk config (= HEAD). On later restarts keep the
+// previously recorded served commit (persisted in app_data) — nginx may be on an older one.
+if (!readServed()) recordServed();
 app.listen(PORT, () => console.log(`[app] listening on :${PORT}`));

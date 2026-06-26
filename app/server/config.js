@@ -5,6 +5,8 @@ export const DATA_DIR = process.env.DATA_DIR || '/data';
 export const PORT = Number(process.env.PORT || 3000);
 
 export const MANIFEST_PATH = path.join(DATA_DIR, 'manifest.json');
+// Short hash of the commit nginx is currently serving (recorded on each successful reload).
+export const SERVED_FILE = path.join(DATA_DIR, 'served-commit');
 
 export const AUTH_USER = process.env.BASIC_AUTH_USER || '';
 export const AUTH_PASS = process.env.BASIC_AUTH_PASS || '';

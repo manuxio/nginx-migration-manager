@@ -61,6 +61,11 @@ export function rollbackTo(hash) {
   }
 }
 
+// Short hash of the current HEAD (matches the %h in history()).
+export function headShort() {
+  try { return git(['rev-parse', '--short', 'HEAD']).trim(); } catch { return ''; }
+}
+
 // Recent history -> [{ hash, date, message }] (date is ISO with timezone, e.g. 2026-06-25 23:02:13 +0000)
 export function history(limit = 30) {
   try {

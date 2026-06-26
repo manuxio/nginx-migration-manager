@@ -140,12 +140,15 @@ App API (served on :3000):
 - `GET  /api/hosts`    → list (domain, primary, alt, active, activeUpstream, enabled, managed)
 - `POST /api/switch`   `{domain, target?}` → forward to primary/alt (omit target = toggle)
 - `POST /api/switch-bulk` `{domains:[…], target}` → batch cutover; unswitchable hosts reported, not fatal
+- `POST /api/host/upstream` `{domain, which:'primary'|'alt', value:'addr[:port]'}` → inline-edit one
+  backend (double-click in the GUI); reuses the marker merge, keeps active sticky. `''` clears alt
 - `GET  /api/host?domain=…` → raw `.conf` text + parsed A/B/active (the in-GUI peek/editor)
 - `POST /api/host/save` `{domain, content}` → write a hand edit, commit a checkpoint, run
   `nginx -t`; BOM-stripped. The edit becomes **pending** (not applied until reload).
 - `GET  /api/status` → `{ reload:{ok,message}, test:{ok,message}, pending }` — what's serving,
   the config-test of the pending changes, and whether a reload is owed.
-- `GET  /api/history` → last 50 commits `[{hash, date, message}]` (date = ISO + tz)
+- `GET  /api/history` → `{ history:[{hash,date,message}], served, head }` — `served` = short
+  hash nginx is currently running (HEAD at last reload), recorded on success in `served-commit`
 - `POST /api/rollback` `{hash}` → **`git reset --hard`** to that checkpoint (discards all later
   changes; recoverable via `git reflog` until gc). Becomes pending like any other change.
 - `POST /api/config-test` → run `nginx -t` on demand (no reload) → `{ok, message}`
