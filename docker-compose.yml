@@ -1,0 +1,44 @@
+services:
+  nginx:
+    build: ./nginx
+    container_name: nginx-managed-proxy
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      - CERT_CN=${CERT_CN:-localhost}
+    volumes:
+      - proxy_conf:/etc/nginx/sites
+      - certs:/etc/nginx/certs
+    networks:
+      - nginxnet
+
+  app:
+    build: ./app
+    container_name: nginx-managed-app
+    restart: unless-stopped
+    # Admin UI. Protected by basic auth + assumed to be on a trusted network.
+    # Host port via APP_PORT (default 3000); container always listens on 3000.
+    # To restrict to this host only, set it to e.g. "127.0.0.1:${APP_PORT:-3000}:3000".
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      - PORT=3000
+      - SITES_DIR=/etc/nginx/sites
+      - DATA_DIR=/data
+      - BASIC_AUTH_USER=${BASIC_AUTH_USER:-admin}
+      - BASIC_AUTH_PASS=${BASIC_AUTH_PASS:-changeme}
+    volumes:
+      - proxy_conf:/etc/nginx/sites
+      - app_data:/data
+    networks:
+      - nginxnet
+
+volumes:
+  proxy_conf:
+  certs:
+  app_data:
+
+networks:
+  nginxnet:

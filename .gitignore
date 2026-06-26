@@ -1,0 +1,15 @@
+# local secrets / per-machine config
+.env
+
+# node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# build output (produced inside the Docker image build)
+app/web/dist/
+app/server/public/
+
+# os cruft
+.DS_Store
+Thumbs.db
