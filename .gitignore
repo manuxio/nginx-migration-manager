@@ -1,5 +1,7 @@
 # local secrets / per-machine config
 .env
+# live/working k8s manifests (contain real registries, secrets) — keep examples only
+k8s/working-*.yaml
 
 # bind-mounted runtime data (nginx config, certs, app data)
 /data/

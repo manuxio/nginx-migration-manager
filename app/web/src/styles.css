@@ -62,3 +62,8 @@ input.search { min-width: 200px; }
 .modal { background: #171a21; border: 1px solid #262b36; border-radius: 10px; max-width: 860px; width: 100%; max-height: 86vh; overflow: auto; padding: 18px; }
 .modal pre { background: #0f1115; border: 1px solid #262b36; border-radius: 6px; padding: 12px; overflow: auto; font-size: 12px; margin: 12px 0 0; }
 .modal textarea.editor { min-height: 380px; margin-top: 12px; }
+
+/* file-editor browser list */
+.fl { padding: 4px 6px; border-radius: 5px; cursor: pointer; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fl:hover { background: #20242e; }
+.cm-editor { border: 1px solid #262b36; border-radius: 6px; }

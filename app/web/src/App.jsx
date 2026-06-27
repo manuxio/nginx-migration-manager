@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import FileEditor from './FileEditor.jsx';
 
 const post = (url, body) =>
   fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }).then((r) => r.json());
@@ -25,6 +26,8 @@ const api = {
   rollback: (hash) => post('/api/rollback', { hash }),
   reload: () => post('/api/reload', {}),
   configTest: () => post('/api/config-test', {}),
+  metrics: () => fetch('/api/metrics').then((r) => r.json()),
+  appConfig: () => fetch('/api/config').then((r) => r.json()),
 };
 
 const Badge = ({ kind, children }) => <span className={`badge b-${kind}`}>{children}</span>;
@@ -56,6 +59,9 @@ export default function App() {
   const [showImport, setShowImport] = useState(false);
   const [csv, setCsv] = useState('');
   const [plan, setPlan] = useState(null);
+  const [metrics, setMetrics] = useState(null);
+  const [editorOn, setEditorOn] = useState(false);
+  const [showFiles, setShowFiles] = useState(false);
 
   const refresh = useCallback(async () => {
     const [h, s, hi] = await Promise.all([api.hosts(), api.status(), api.history()]);
@@ -65,6 +71,18 @@ export default function App() {
     setServed(hi.served || '');
   }, []);
   useEffect(() => { refresh(); }, [refresh]);
+
+  // poll live nginx throughput (stub_status via the app); independent of the host refresh
+  useEffect(() => {
+    let alive = true;
+    const tick = () => api.metrics().then((m) => { if (alive) setMetrics(m); }).catch(() => {});
+    tick();
+    const h = setInterval(tick, 5000);
+    return () => { alive = false; clearInterval(h); };
+  }, []);
+
+  // one-time: is the raw config file editor enabled? (FILE_EDITOR)
+  useEffect(() => { api.appConfig().then((c) => setEditorOn(!!c.editor)).catch(() => {}); }, []);
 
   async function run(fn) {
     setBusy(true);
@@ -247,6 +265,12 @@ export default function App() {
       : <code className={cls} title="double-click to edit" style={{ cursor: 'text' }} onDoubleClick={() => host.managed && startEdit(host, route, which)}>{val || '—'}</code>;
   };
 
+  // live nginx network status (from /api/metrics — stub_status scraped by the app)
+  const netDown = !metrics || metrics.ok === false || metrics.active == null;
+  const netTip = netDown
+    ? 'nginx stub_status unreachable (app can\'t read nginx metrics)'
+    : `${metrics.requestsWindow} requests in the last ${metrics.windowSec}s · active ${metrics.active} (reading ${metrics.reading} / writing ${metrics.writing} / waiting ${metrics.waiting})`;
+
   return (
     <div className="wrap">
       <h1>nginx-managed — migration cockpit</h1>
@@ -278,11 +302,19 @@ export default function App() {
           <div className="stat"><b className="cA">{summary.onA}</b><span>on A</span></div>
           <div className="stat"><b className="cB">{summary.onB}</b><span>on B (migrated)</span></div>
           <div className="stat"><b>{summary.disabled}</b><span>disabled</span></div>
+          <div className="stat" title={netTip}>
+            <b>
+              <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', marginRight: 6, verticalAlign: 'middle', background: netDown ? '#f43f5e' : '#22c55e' }} />
+              {netDown ? 'offline' : `${metrics.perSec}/s`}
+            </b>
+            <span>{netDown ? 'nginx unreachable' : `${metrics.active} conn · ${metrics.requestsWindow}/${metrics.windowSec}s`}</span>
+          </div>
           <div style={{ flex: 1, minWidth: 160 }}>
             <div className="progress"><div style={{ width: `${summary.pct}%` }} /></div>
             <span className="muted" style={{ fontSize: 12 }}>{summary.pct}% of {summary.migratable} migratable routes on B</span>
           </div>
           <button className="ghost" onClick={() => run(async () => {})} disabled={busy}>Refresh</button>
+          {editorOn && <button className="ghost" onClick={() => setShowFiles(true)} title="Edit raw files under /etc/nginx">Files</button>}
           <button className="ghost" onClick={testConfig} disabled={busy}>Test config</button>
           <button className={status?.pending ? 'warn' : 'ghost'} onClick={() => run(api.reload)} disabled={busy} title={status?.pending ? 'Pending changes are not live until you reload' : 'Nothing pending'}>
             {status?.pending ? 'Reload nginx ●' : 'Reload nginx'}
@@ -456,6 +488,8 @@ export default function App() {
           </tbody>
         </table>
       </div>
+
+      {showFiles && <FileEditor onClose={() => { setShowFiles(false); refresh(); }} />}
 
       {peek && (
         <div className="overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) closePeek(); }}>

@@ -11,6 +11,17 @@ export const SERVED_FILE = path.join(DATA_DIR, 'served-commit');
 export const AUTH_USER = process.env.BASIC_AUTH_USER || '';
 export const AUTH_PASS = process.env.BASIC_AUTH_PASS || '';
 
+// nginx stub_status (listens on 0.0.0.0:8080, never published). Reach it on the right host
+// for the topology: same-pod loopback in k8s (kubelet always sets KUBERNETES_SERVICE_HOST),
+// the "nginx" service name in docker-compose. Set NGINX_STATUS_URL to override explicitly.
+const STATUS_HOST = process.env.KUBERNETES_SERVICE_HOST ? '127.0.0.1' : 'nginx';
+export const STATUS_URL = process.env.NGINX_STATUS_URL || `http://${STATUS_HOST}:8080/stub_status`;
+
+// In-GUI raw file editor over the nginx config dir. Powerful + dangerous (arbitrary writes
+// under CONFIG_ROOT) — ON by default, disable with FILE_EDITOR=0 (or false/no/off).
+export const CONFIG_ROOT = path.resolve(process.env.CONFIG_ROOT || path.dirname(SITES_DIR));
+export const EDITOR_ENABLED = !['0', 'false', 'no', 'off'].includes(String(process.env.FILE_EDITOR || '').toLowerCase());
+
 // status / request files exchanged with the nginx container's watcher
 export const RELOAD_OK = path.join(SITES_DIR, '.reload-ok');
 export const RELOAD_MSG = path.join(SITES_DIR, '.reload-msg');

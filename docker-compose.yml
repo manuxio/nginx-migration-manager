@@ -29,8 +29,10 @@ services:
       - DATA_DIR=/data
       - BASIC_AUTH_USER=${BASIC_AUTH_USER:-admin}
       - BASIC_AUTH_PASS=${BASIC_AUTH_PASS:-changeme}
+      - FILE_EDITOR=${FILE_EDITOR:-1}          # GUI raw file editor over /etc/nginx (1=on, 0=off)
     volumes:
-      - ./data/nginx/sites:/etc/nginx/sites   # same host folder as nginx (host configs + git)
+      # whole config dir (not just sites/) so the GUI file editor can reach nginx.conf + snippets
+      - ./data/nginx:/etc/nginx                # host configs + git, shared with nginx
       - ./data/app:/data                       # manifest, backups
     networks:
       - nginxnet

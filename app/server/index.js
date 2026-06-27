@@ -7,7 +7,9 @@ import express from 'express';
 import {
   PORT, AUTH_USER, AUTH_PASS, SITES_DIR,
   RELOAD_OK, RELOAD_MSG, RELOAD_REQUEST, TEST_OK, TEST_MSG, TEST_REQUEST, PENDING, SERVED_FILE,
+  EDITOR_ENABLED, CONFIG_ROOT,
 } from './config.js';
+import { listDir, readFile, writeFile } from './fileEditor.js';
 import { ensureRepo, history, commitAll, rollbackTo, headShort } from './gitStore.js';
 import {
   listHosts, existingFileFor, switchRoute, setEnabled, writeHostFile, splitHostPort, parseDomain, deleteHost,
@@ -17,6 +19,7 @@ import { forgetHost } from './manifest.js';
 import { isValidDomain, isValidPath, isValidAddress, normalizePort } from './validate.js';
 import { toCsv } from './csv.js';
 import { importCsv } from './importer.js';
+import { startMetrics, metricsSnapshot } from './metrics.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -61,6 +64,46 @@ app.get('/api/status', (req, res) => {
     test: { ok: to === '1', known: to !== '', message: read(TEST_MSG) || '' },
     pending: read(PENDING) === '1',
   });
+});
+
+// Live nginx throughput from the loopback stub_status (app-only). Counters are totals, so
+// this returns the delta over the last ~60s plus current connection gauges.
+app.get('/api/metrics', (req, res) => {
+  res.json(metricsSnapshot());
+});
+
+// UI feature flags (fetched once on load).
+app.get('/api/config', (req, res) => {
+  res.json({ editor: EDITOR_ENABLED, root: CONFIG_ROOT });
+});
+
+// ----------------------------------------------------- raw config file editor (dangerous)
+// Browse/read/write files under CONFIG_ROOT (/etc/nginx). All confined to the root by
+// fileEditor.safePath. Gated by FILE_EDITOR (on by default) and the global basic auth.
+function editorGuard(req, res, next) {
+  if (!EDITOR_ENABLED) return res.status(403).json({ error: 'file editor is disabled (FILE_EDITOR=0)' });
+  next();
+}
+app.get('/api/files', editorGuard, (req, res) => {
+  try { res.json(listDir(req.query.path || '')); }
+  catch (e) { res.status(400).json({ error: String((e && e.message) || e) }); }
+});
+app.get('/api/file', editorGuard, (req, res) => {
+  try { res.json(readFile(String(req.query.path || ''))); }
+  catch (e) { res.status(400).json({ error: String((e && e.message) || e) }); }
+});
+app.post('/api/file/save', editorGuard, async (req, res) => {
+  const { path: rel, content } = req.body || {};
+  if (typeof content !== 'string') return res.status(400).json({ error: 'content must be a string' });
+  const before = _mtime(TEST_OK);
+  let info;
+  try { info = writeFile(String(rel || ''), content); }
+  catch (e) { return res.status(400).json({ error: String((e && e.message) || e) }); }
+  // Fire an nginx -t so the editor reports whether the change is loadable (not yet applied —
+  // a reload is still required; nginx.conf edits don't flip the watcher's "pending" flag).
+  try { fs.writeFileSync(TEST_REQUEST, String(Date.now())); } catch { /* ignore */ }
+  const t = await pollResult(TEST_OK, TEST_MSG, before, 8000, 'config valid', 'config test failed');
+  res.json({ ...info, ok: t.ok, message: t.message });
 });
 
 // The commit nginx is currently serving = HEAD at the last successful reload.
@@ -417,4 +460,5 @@ ensureRepo();
 // First boot: nginx loaded the current on-disk config (= HEAD). On later restarts keep the
 // previously recorded served commit (persisted in app_data) — nginx may be on an older one.
 if (!readServed()) recordServed();
+startMetrics();   // begin sampling nginx stub_status (loopback) for /api/metrics
 app.listen(PORT, () => console.log(`[app] listening on :${PORT}`));
