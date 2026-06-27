@@ -313,12 +313,14 @@ export default function App() {
             <div className="progress"><div style={{ width: `${summary.pct}%` }} /></div>
             <span className="muted" style={{ fontSize: 12 }}>{summary.pct}% of {summary.migratable} migratable routes on B</span>
           </div>
-          <button className="ghost" onClick={() => run(async () => {})} disabled={busy}>Refresh</button>
-          {editorOn && <button className="ghost" onClick={() => setShowFiles(true)} title="Edit raw files under /etc/nginx">Files</button>}
-          <button className="ghost" onClick={testConfig} disabled={busy}>Test config</button>
-          <button className={status?.pending ? 'warn' : 'ghost'} onClick={() => run(api.reload)} disabled={busy} title={status?.pending ? 'Pending changes are not live until you reload' : 'Nothing pending'}>
-            {status?.pending ? 'Reload nginx ●' : 'Reload nginx'}
-          </button>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <button className="ghost" onClick={() => run(async () => {})} disabled={busy}>Refresh</button>
+            {editorOn && <button className="ghost" onClick={() => setShowFiles(true)} title="Edit raw files under /etc/nginx">Files</button>}
+            <button className="ghost" onClick={testConfig} disabled={busy}>Test config</button>
+            <button className={status?.pending ? 'warn' : 'ghost'} onClick={() => run(api.reload)} disabled={busy} title={status?.pending ? 'Pending changes are not live until you reload' : 'Nothing pending'}>
+              {status?.pending ? 'Reload nginx ●' : 'Reload nginx'}
+            </button>
+          </div>
         </div>
         {testResult && (
           <div className={`banner ${testResult.ok ? 'ok' : 'fail'}`} style={{ marginTop: 12, marginBottom: 0, whiteSpace: 'pre-wrap' }}>
