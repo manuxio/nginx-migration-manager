@@ -31,6 +31,22 @@ app.use(express.json({ limit: '5mb' }));
 // (CSRF). text/csv forces a preflight, which the lack of CORS headers then blocks.
 app.use(express.text({ type: ['text/csv'], limit: '5mb' }));
 
+// ----------------------------------------------------------- security headers
+// Set on every response (incl. 401/503 and static assets). The admin UI is same-origin and
+// pulls no third-party resources, so the CSP is tight; CodeMirror injects <style> tags, so
+// style-src needs 'unsafe-inline'. frame-ancestors blocks clickjacking (X-Frame-Options is
+// the legacy equivalent for old browsers). /api responses are marked no-store.
+app.use((req, res, next) => {
+  res.set('X-Frame-Options', 'DENY');
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('Referrer-Policy', 'no-referrer');
+  res.set('Content-Security-Policy',
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    + "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+  if (req.path.startsWith('/api/')) res.set('Cache-Control', 'no-store');
+  next();
+});
+
 // ------------------------------------------------------------------ basic auth
 // Compare via crypto.timingSafeEqual over fixed-length SHA-256 digests: constant-time and,
 // because both sides are hashed to 32 bytes first, it neither throws on length mismatch nor

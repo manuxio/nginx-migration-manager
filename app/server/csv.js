@@ -32,7 +32,12 @@ export function parseCsv(text) {
     const f = parseLine(line);
     if (!headerChecked) {
       headerChecked = true;
-      if (/domain/i.test(f[0] || '')) continue; // skip header
+      // Only skip a row that actually looks like the column header. A bare "contains 'domain'"
+      // test would drop a real first row whose host contains "domain" (e.g. domain.example.com).
+      // The documented header names its first column "domain-name" and its second "address".
+      const c0 = (f[0] || '').toLowerCase();
+      const c1 = (f[1] || '').toLowerCase();
+      if (/^domain[-_\s]?name$/.test(c0) || c1 === 'address') continue; // skip header
     }
     rows.push({
       domain: f[0] || '',

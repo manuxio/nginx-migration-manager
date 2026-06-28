@@ -1,17 +1,32 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import FileEditor from './FileEditor.jsx';
 
+// Every API call goes through http(): a non-JSON response (a gateway/proxy error page, a
+// 401/503 text body, or a dropped connection) becomes a thrown Error with a readable message
+// instead of a silent JSON.parse rejection. JSON error responses ({error}) pass straight
+// through, so existing `r.error` checks keep working.
+async function http(url, opts) {
+  let res;
+  try { res = await fetch(url, opts); }
+  catch { throw new Error('network error — is the server reachable?'); }
+  const ct = res.headers.get('content-type') || '';
+  if (!ct.includes('application/json')) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text.trim() || `${res.status} ${res.statusText}`);
+  }
+  return res.json();
+}
+const get = (url) => http(url);
 const post = (url, body) =>
-  fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }).then((r) => r.json());
+  http(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
 
 const api = {
-  hosts: () => fetch('/api/hosts').then((r) => r.json()),
-  status: () => fetch('/api/status').then((r) => r.json()),
-  history: () => fetch('/api/history').then((r) => r.json()),
-  host: (domain) => fetch(`/api/host?domain=${encodeURIComponent(domain)}`).then((r) => r.json()),
+  hosts: () => get('/api/hosts'),
+  status: () => get('/api/status'),
+  history: () => get('/api/history'),
+  host: (domain) => get(`/api/host?domain=${encodeURIComponent(domain)}`),
   saveHost: (domain, content) => post('/api/host/save', { domain, content }),
-  importCsv: (csv, apply) =>
-    fetch(`/api/import?apply=${apply}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ csv }) }).then((r) => r.json()),
+  importCsv: (csv, apply) => post(`/api/import?apply=${apply}`, { csv }),
   switch: (domain, path, target) => post('/api/switch', { domain, path, target }),
   switchBulk: (items, target) => post('/api/switch-bulk', { items, target }),
   setUpstream: (domain, path, which, value) => post('/api/host/upstream', { domain, path, which, value }),
@@ -26,8 +41,8 @@ const api = {
   rollback: (hash) => post('/api/rollback', { hash }),
   reload: () => post('/api/reload', {}),
   configTest: () => post('/api/config-test', {}),
-  metrics: () => fetch('/api/metrics').then((r) => r.json()),
-  appConfig: () => fetch('/api/config').then((r) => r.json()),
+  metrics: () => get('/api/metrics'),
+  appConfig: () => get('/api/config'),
 };
 
 const Badge = ({ kind, children }) => <span className={`badge b-${kind}`}>{children}</span>;
@@ -39,6 +54,7 @@ export default function App() {
   const [hist, setHist] = useState([]);
   const [served, setServed] = useState('');
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
 
   const [q, setQ] = useState('');
   const [field, setField] = useState('any');
@@ -64,11 +80,16 @@ export default function App() {
   const [showFiles, setShowFiles] = useState(false);
 
   const refresh = useCallback(async () => {
-    const [h, s, hi] = await Promise.all([api.hosts(), api.status(), api.history()]);
-    setHosts(h.hosts || []);
-    setStatus(s);
-    setHist(hi.history || []);
-    setServed(hi.served || '');
+    try {
+      const [h, s, hi] = await Promise.all([api.hosts(), api.status(), api.history()]);
+      setHosts(h.hosts || []);
+      setStatus(s);
+      setHist(hi.history || []);
+      setServed(hi.served || '');
+      setErr(null);
+    } catch (e) {
+      setErr(e.message || String(e));
+    }
   }, []);
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -86,7 +107,9 @@ export default function App() {
 
   async function run(fn) {
     setBusy(true);
-    try { await fn(); await refresh(); } finally { setBusy(false); }
+    try { await fn(); await refresh(); }
+    catch (e) { setErr(e.message || String(e)); }
+    finally { setBusy(false); }
     setTimeout(refresh, 1400); // pick up the watcher's pending/test result
   }
 
@@ -275,6 +298,13 @@ export default function App() {
     <div className="wrap">
       <h1>nginx-managed — migration cockpit</h1>
       <p className="sub">Cut routes (<b>host</b> or <b>host/path/*</b>) from <b>backend A</b> to <b>backend B</b>. One file per domain · hand edits preserved · no mass delete.</p>
+
+      {err && (
+        <div className="banner fail" style={{ whiteSpace: 'pre-wrap' }}>
+          ⚠ {err}
+          {' '}<button className="ghost sm" onClick={() => setErr(null)}>dismiss</button>
+        </div>
+      )}
 
       {status && (
         <div className={`banner ${status.reload.ok ? 'ok' : 'fail'}`}>

@@ -27,8 +27,11 @@ export function isValidAddress(a) {
 // Returns a valid port number, or null if invalid. Empty/undefined -> default 80.
 export function normalizePort(p) {
   if (p === undefined || p === null || String(p).trim() === '') return 80;
-  const n = Number(p);
-  if (!Number.isInteger(n) || n < 1 || n > 65535) return null;
+  const s = String(p).trim();
+  // Digits only: reject Number()'s lenient forms ("0x50" -> 80, "1e3" -> 1000, " 8 0 ").
+  if (!/^\d{1,5}$/.test(s)) return null;
+  const n = Number(s);
+  if (n < 1 || n > 65535) return null;
   return n;
 }
 

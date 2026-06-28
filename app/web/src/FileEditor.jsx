@@ -4,7 +4,19 @@ import { StreamLanguage } from '@codemirror/language';
 import { nginx } from '@codemirror/legacy-modes/mode/nginx';
 import { html } from '@codemirror/lang-html';
 
-const j = (url) => fetch(url).then((r) => r.json());
+// Throws a readable Error on a non-JSON response (gateway error, 401/503 text, dropped
+// connection) instead of a silent JSON.parse rejection; JSON {error} bodies pass through.
+const j = async (url, opts) => {
+  let res;
+  try { res = await fetch(url, opts); }
+  catch { throw new Error('network error — is the server reachable?'); }
+  const ct = res.headers.get('content-type') || '';
+  if (!ct.includes('application/json')) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text.trim() || `${res.status} ${res.statusText}`);
+  }
+  return res.json();
+};
 const fmtSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${(n / 1024).toFixed(1)} KB` : `${n} B`);
 // pick syntax highlighting by file name: nginx for *.conf / nginx.conf / mime.types / extensionless,
 // html for *.htm(l), plain otherwise.
@@ -28,7 +40,7 @@ export default function FileEditor({ onClose }) {
     j(`/api/files?path=${encodeURIComponent(p)}`).then((r) => {
       if (r.error) return setErr(r.error);
       setDir(r.path); setEntries(r.entries);
-    }).catch(() => setErr('failed to list directory'));
+    }).catch((e) => setErr(e.message || 'failed to list directory'));
   }, []);
   useEffect(() => { loadDir(''); }, [loadDir]);
 
@@ -37,18 +49,20 @@ export default function FileEditor({ onClose }) {
     j(`/api/file?path=${encodeURIComponent(p)}`).then((r) => {
       if (r.error) return setErr(r.error);
       setFile(r); setContent(r.content || ''); setDirty(false);
-    });
+    }).catch((e) => setErr(e.message || 'failed to open file'));
   };
 
   const save = async () => {
     setBusy(true); setResult(null);
     try {
-      const r = await fetch('/api/file/save', {
+      const r = await j('/api/file/save', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: file.path, content }),
-      }).then((x) => x.json());
+      });
       setResult(r);
       if (!r.error) setDirty(false);
+    } catch (e) {
+      setResult({ error: e.message || String(e) });
     } finally { setBusy(false); }
   };
 
