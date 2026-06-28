@@ -235,7 +235,10 @@ export function mergeDomain(existing, { domain, routes }) {
 export function setServerName(content, domain) {
   return content
     .replace(/^([ \t]*#[ \t]*domain:).*$/m, `$1 ${domain}`)
-    .replace(/^([ \t]*server_name[ \t]+)[^;\n]*;(.*)$/m, `$1${domain};$2`);
+    // Single mandatory whitespace boundary (captured) before the value: avoids two adjacent
+    // whitespace-matching quantifiers (`[ \t]+` next to `[^;\n]*`), which backtrack
+    // polynomially on `server_name<many tabs>` with no ';'. One quantifier on the tail = linear.
+    .replace(/^([ \t]*server_name[ \t])[^;\n]*;(.*)$/m, `$1${domain};$2`);
 }
 
 // Rename a route's path: rewrite its "# managed:route" marker and the following "location"

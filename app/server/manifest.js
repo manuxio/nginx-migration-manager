@@ -26,12 +26,6 @@ export function safeKey(k) {
   return typeof k === 'string' && k !== '__proto__' && k !== 'prototype' && k !== 'constructor';
 }
 
-export function recordHost(m, { domain, address, port, altAddress, altPort }, source) {
-  if (!safeKey(domain)) return m;
-  m[domain] = { address, port, altAddress: altAddress || '', altPort: altPort || '', source, updatedAt: new Date().toISOString() };
-  return m;
-}
-
 export function forgetHost(domain) {
   if (!safeKey(domain)) return;
   const m = loadManifest();
