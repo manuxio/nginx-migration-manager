@@ -1,0 +1,72 @@
+name: Security
+
+# Dependency + supply-chain + IaC scanning. npm-audit gates the build on a HIGH+
+# vulnerability in shipped (production) dependencies; Trivy surfaces dependency, Dockerfile,
+# k8s/compose misconfiguration, and secret findings in the Security tab; dependency-review
+# blocks PRs that introduce vulnerable packages.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '41 3 * * 1'   # weekly, Monday 03:41 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  npm-audit:
+    name: npm audit (${{ matrix.dir }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: [app/server, app/web]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # Audits from the committed lockfile (no install needed). --omit=dev so build-only
+      # tooling (esbuild/vite dev server) doesn't gate the build — only shipped deps do.
+      - name: Audit production dependencies
+        working-directory: ${{ matrix.dir }}
+        run: npm audit --omit=dev --audit-level=high
+
+  trivy:
+    name: Trivy (deps, IaC, secrets)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln,misconfig,secret
+          severity: CRITICAL,HIGH
+          format: sarif
+          output: trivy-results.sarif
+          # Report only (exit-code 0): findings surface in the Security tab, npm-audit is the gate.
+
+      - name: Upload Trivy results to code scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
