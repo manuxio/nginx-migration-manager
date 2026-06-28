@@ -10,6 +10,11 @@ export const SERVED_FILE = path.join(DATA_DIR, 'served-commit');
 
 export const AUTH_USER = process.env.BASIC_AUTH_USER || '';
 export const AUTH_PASS = process.env.BASIC_AUTH_PASS || '';
+// This API writes nginx config, so it must fail CLOSED: without both a user AND pass it
+// refuses to serve (503) rather than silently running open. To deliberately run without
+// auth (e.g. behind your own authenticating gateway), set AUTH_DISABLED=1.
+export const AUTH_CONFIGURED = AUTH_USER !== '' && AUTH_PASS !== '';
+export const AUTH_DISABLED = ['1', 'true', 'yes', 'on'].includes(String(process.env.AUTH_DISABLED || '').toLowerCase());
 
 // nginx stub_status (listens on 0.0.0.0:8080, never published). Reach it on the right host
 // for the topology: same-pod loopback in k8s (kubelet always sets KUBERNETES_SERVICE_HOST),

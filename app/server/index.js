@@ -2,10 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { timingSafeEqual as cryptoTimingSafeEqual, createHash } from 'node:crypto';
 import express from 'express';
 
 import {
-  PORT, AUTH_USER, AUTH_PASS, SITES_DIR,
+  PORT, AUTH_USER, AUTH_PASS, AUTH_CONFIGURED, AUTH_DISABLED, SITES_DIR,
   RELOAD_OK, RELOAD_MSG, RELOAD_REQUEST, TEST_OK, TEST_MSG, TEST_REQUEST, PENDING, SERVED_FILE,
   EDITOR_ENABLED, CONFIG_ROOT,
 } from './config.js';
@@ -25,22 +26,31 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 
 app.use(express.json({ limit: '5mb' }));
-app.use(express.text({ type: ['text/csv', 'text/plain'], limit: '5mb' }));
+// Only text/csv for the raw-CSV-body import path. NOT text/plain: that is a CORS "simple"
+// content-type, which would let a cross-site form POST to /api/import without a preflight
+// (CSRF). text/csv forces a preflight, which the lack of CORS headers then blocks.
+app.use(express.text({ type: ['text/csv'], limit: '5mb' }));
 
 // ------------------------------------------------------------------ basic auth
-function timingSafeEqual(a, b) {
-  if (a.length !== b.length) return false;
-  let r = 0;
-  for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return r === 0;
+// Compare via crypto.timingSafeEqual over fixed-length SHA-256 digests: constant-time and,
+// because both sides are hashed to 32 bytes first, it neither throws on length mismatch nor
+// leaks the secret's length.
+const sha256 = (s) => createHash('sha256').update(String(s), 'utf8').digest();
+function credEqual(a, b) {
+  return cryptoTimingSafeEqual(sha256(a), sha256(b));
 }
 app.use((req, res, next) => {
-  if (!AUTH_USER) return next(); // auth disabled
+  if (AUTH_DISABLED) return next(); // explicit, logged opt-out (see startup warning)
+  if (!AUTH_CONFIGURED) {
+    // Fail closed: never serve the config-writing API without credentials configured.
+    return res.status(503).type('text/plain').send(
+      'admin auth not configured: set BASIC_AUTH_USER and BASIC_AUTH_PASS (or AUTH_DISABLED=1 to run without auth)');
+  }
   const h = req.headers.authorization || '';
   const [scheme, enc] = h.split(' ');
   if (scheme === 'Basic' && enc) {
     const [u, p] = Buffer.from(enc, 'base64').toString().split(':');
-    if (timingSafeEqual(u || '', AUTH_USER) && timingSafeEqual(p || '', AUTH_PASS)) return next();
+    if (credEqual(u || '', AUTH_USER) && credEqual(p || '', AUTH_PASS)) return next();
   }
   res.set('WWW-Authenticate', 'Basic realm="nginx-managed"').status(401).send('Authentication required');
 });
@@ -461,4 +471,6 @@ ensureRepo();
 // previously recorded served commit (persisted in app_data) — nginx may be on an older one.
 if (!readServed()) recordServed();
 startMetrics();   // begin sampling nginx stub_status (loopback) for /api/metrics
+if (AUTH_DISABLED) console.warn('[app] WARNING: AUTH_DISABLED=1 — admin API is running WITHOUT authentication');
+else if (!AUTH_CONFIGURED) console.warn('[app] WARNING: BASIC_AUTH_USER/PASS not set — refusing all requests with 503 until configured');
 app.listen(PORT, () => console.log(`[app] listening on :${PORT}`));

@@ -27,8 +27,11 @@ services:
       - PORT=3000
       - SITES_DIR=/etc/nginx/sites
       - DATA_DIR=/data
+      # No default password: the app fails CLOSED (503) until BASIC_AUTH_PASS is set. Put
+      # credentials in a .env file. To run without auth on a trusted network, set AUTH_DISABLED=1.
       - BASIC_AUTH_USER=${BASIC_AUTH_USER:-admin}
-      - BASIC_AUTH_PASS=${BASIC_AUTH_PASS:-changeme}
+      - BASIC_AUTH_PASS=${BASIC_AUTH_PASS:-}
+      - AUTH_DISABLED=${AUTH_DISABLED:-}
       - FILE_EDITOR=${FILE_EDITOR:-1}          # GUI raw file editor over /etc/nginx (1=on, 0=off)
     volumes:
       # whole config dir (not just sites/) so the GUI file editor can reach nginx.conf + snippets
