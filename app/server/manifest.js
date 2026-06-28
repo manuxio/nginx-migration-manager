@@ -4,11 +4,14 @@ import { MANIFEST_PATH, DATA_DIR } from './config.js';
 // Desired-state record used for listing/export context. NOT the merge gate —
 // the inline markers in the host files decide what gets rewritten.
 
+// Returns a NULL-prototype object: domains index it directly (m[domain]), so a prototype-less
+// receiver makes those writes/deletes incapable of polluting Object.prototype (and CodeQL
+// recognizes it as a safe sink). JSON.parse never sets a real prototype, so the copy is faithful.
 export function loadManifest() {
   try {
-    return JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+    return Object.assign(Object.create(null), JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8')));
   } catch {
-    return {};
+    return Object.create(null);
   }
 }
 
