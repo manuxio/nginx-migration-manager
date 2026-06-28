@@ -8,7 +8,7 @@ import express from 'express';
 import {
   PORT, AUTH_USER, AUTH_PASS, AUTH_CONFIGURED, AUTH_DISABLED, SITES_DIR,
   RELOAD_OK, RELOAD_MSG, RELOAD_REQUEST, TEST_OK, TEST_MSG, TEST_REQUEST, PENDING, SERVED_FILE,
-  EDITOR_ENABLED, CONFIG_ROOT,
+  EDITOR_ENABLED, CONFIG_ROOT, BRAND,
 } from './config.js';
 import { listDir, readFile, writeFile } from './fileEditor.js';
 import { ensureRepo, history, commitAll, rollbackTo, headShort } from './gitStore.js';
@@ -17,6 +17,7 @@ import {
   mergeDomain, normPath, setServerName, renameRoute, confPath, renderDomain, locKey, deleteRoute,
 } from './nginxHost.js';
 import { forgetHost } from './manifest.js';
+import { matchPath } from './locationMatch.js';
 import { isValidDomain, isValidPath, isValidAddress, normalizePort } from './validate.js';
 import { toCsv } from './csv.js';
 import { importCsv } from './importer.js';
@@ -100,7 +101,7 @@ app.get('/api/metrics', (req, res) => {
 
 // UI feature flags (fetched once on load).
 app.get('/api/config', (req, res) => {
-  res.json({ editor: EDITOR_ENABLED, root: CONFIG_ROOT });
+  res.json({ editor: EDITOR_ENABLED, root: CONFIG_ROOT, brand: BRAND });
 });
 
 // ----------------------------------------------------- raw config file editor (dangerous)
@@ -234,18 +235,20 @@ app.post('/api/host/upstream', (req, res) => {
   res.json({ domain, path: route, which, changed: merged.changed, value: newVal });
 });
 
-// Add a new host with a default root route -> 127.0.0.1:80, no Backend B.
+// Add a new host with a default root route -> 192.0.2.1:80, no Backend B. 192.0.2.1 is a
+// reserved, non-routable RFC 5737 address: an obvious "set me" placeholder that can't be
+// reached and (unlike 127.0.0.1:80, which is nginx itself) can never cause a proxy loop.
 app.post('/api/host/add', (req, res) => {
   const domain = String(req.body?.domain || '').trim().toLowerCase();
   if (!isValidDomain(domain)) return res.status(400).json({ error: 'invalid domain' });
   if (existingFileFor(domain)) return res.status(400).json({ error: `host ${domain} already exists` });
-  const route = { path: '/', address: '127.0.0.1', port: 80, altAddress: '', altPort: '' };
+  const route = { path: '/', address: '192.0.2.1', port: 80, altAddress: '', altPort: '' };
   writeHostFile(confPath(domain), renderDomain({ domain, routes: [route] }));
   commitAll(`add host ${domain}`);
   res.json({ domain, changed: true });
 });
 
-// Add a new route (path) to an existing host -> 127.0.0.1:80, no Backend B.
+// Add a new route (path) to an existing host -> 192.0.2.1:80 (non-routable placeholder), no Backend B.
 app.post('/api/host/route/add', (req, res) => {
   const domain = String(req.body?.domain || '').trim().toLowerCase();
   let path = String(req.body?.path ?? '').trim();
@@ -258,7 +261,7 @@ app.post('/api/host/route/add', (req, res) => {
 
   const existing = fs.readFileSync(file, 'utf8');
   if (parseDomain(existing).routes.some((r) => locKey(r.path) === locKey(path))) return res.status(400).json({ error: `route ${path} already exists (same location as another route)` });
-  const merged = mergeDomain(existing, { domain, routes: [{ path, address: '127.0.0.1', port: 80, altAddress: '', altPort: '' }] });
+  const merged = mergeDomain(existing, { domain, routes: [{ path, address: '192.0.2.1', port: 80, altAddress: '', altPort: '' }] });
   if (merged.manual) return res.status(400).json({ error: 'host is hand-authored (no managed markers)' });
   if (merged.changed) { writeHostFile(file, merged.content); commitAll(`add route ${domain} ${path}`); }
   res.json({ domain, path, changed: merged.changed });
@@ -323,6 +326,16 @@ app.post('/api/host/route', (req, res) => {
   if (r.error) return res.status(400).json({ error: r.error });
   if (r.changed) { writeHostFile(file, r.content); commitAll(`rename route ${domain} ${oldPath} -> ${newPath}`); }
   res.json({ domain, path: newPath, changed: r.changed });
+});
+
+// Resolve which `location` in a host's config wins for a test request path, using nginx's
+// own selection rules (exact > longest-prefix > ^~ > first-regex). Read-only; no reload.
+app.post('/api/host/match', (req, res) => {
+  const domain = String(req.body?.domain || '').trim().toLowerCase();
+  if (!isValidDomain(domain)) return res.status(400).json({ error: 'invalid domain' });
+  const file = existingFileFor(domain);
+  if (!file) return res.status(404).json({ error: 'no such host' });
+  res.json(matchPath(fs.readFileSync(file, 'utf8'), String(req.body?.path ?? '')));
 });
 
 // Peek: raw config file + parsed metadata for one host (for the in-GUI viewer).

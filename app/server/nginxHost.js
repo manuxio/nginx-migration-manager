@@ -362,6 +362,30 @@ export function writeHostFile(filePath, content) {
   fs.renameSync(tmp, filePath);
 }
 
+// Domain ordering: group by the registrable (second-level) domain so subdomains sit with
+// their apex — 'www.cappelleri.net' sorts as 'cappelleri.net'. Within one registrable domain,
+// break ties by the 3rd-level label, then 4th, and so on (apex first). Registrable domain =
+// last two labels (covers the common .com/.net/.org/... case; multi-part TLDs like .co.uk
+// aren't special-cased).
+function domainParts(domain) {
+  const labels = String(domain).toLowerCase().split('.').filter(Boolean);
+  return {
+    registrable: labels.slice(-2).join('.'), // 'cappelleri.net'
+    sub: labels.slice(0, -2).reverse(),       // subdomain labels, 3rd level first: 'b.a.x.net' -> ['a','b']
+  };
+}
+function compareDomains(a, b) {
+  const pa = domainParts(a); const pb = domainParts(b);
+  const byReg = pa.registrable.localeCompare(pb.registrable);
+  if (byReg !== 0) return byReg;
+  const n = Math.max(pa.sub.length, pb.sub.length);
+  for (let i = 0; i < n; i++) {
+    const c = (pa.sub[i] || '').localeCompare(pb.sub[i] || ''); // missing label ('' ) sorts first -> apex before subdomains
+    if (c !== 0) return c;
+  }
+  return 0;
+}
+
 // List all host files with their routes.
 export function listHosts() {
   if (!fs.existsSync(SITES_DIR)) return [];
@@ -378,7 +402,7 @@ export function listHosts() {
     const parsed = parseDomain(content);
     out.push({ domain, file: name, enabled, managed: parsed.managed, routes: parsed.routes });
   }
-  return out.sort((a, b) => a.domain.localeCompare(b.domain));
+  return out.sort((a, b) => compareDomains(a.domain, b.domain));
 }
 
 export { confPath, normPath };

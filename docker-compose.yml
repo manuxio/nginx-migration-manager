@@ -27,6 +27,7 @@ services:
       - PORT=3000
       - SITES_DIR=/etc/nginx/sites
       - DATA_DIR=/data
+      - APP_NAME=${APP_NAME:-nginx-managed}     # UI brand name (sidebar + browser tab)
       # No default password: the app fails CLOSED (503) until BASIC_AUTH_PASS is set. Put
       # credentials in a .env file. To run without auth on a trusted network, set AUTH_DISABLED=1.
       - BASIC_AUTH_USER=${BASIC_AUTH_USER:-admin}

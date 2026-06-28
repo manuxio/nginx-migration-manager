@@ -1,551 +1,195 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import FileEditor from './FileEditor.jsx';
+import React, { useMemo, useState } from 'react';
+import {
+  Layout, Menu, Typography, Button, Tooltip, Dropdown, Badge, Space, Grid, App as AntApp,
+} from 'antd';
+import {
+  DashboardOutlined, ClusterOutlined, UploadOutlined, HistoryOutlined, FileTextOutlined,
+  ReloadOutlined, BulbOutlined, BulbFilled, GlobalOutlined, ThunderboltOutlined, MenuOutlined,
+  ExperimentOutlined,
+} from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
+import { useTheme } from './theme/ThemeProvider.jsx';
+import { useAppData } from './api/AppData.jsx';
+import { LANGUAGES } from './i18n/index.js';
 
-// Every API call goes through http(): a non-JSON response (a gateway/proxy error page, a
-// 401/503 text body, or a dropped connection) becomes a thrown Error with a readable message
-// instead of a silent JSON.parse rejection. JSON error responses ({error}) pass straight
-// through, so existing `r.error` checks keep working.
-async function http(url, opts) {
-  let res;
-  try { res = await fetch(url, opts); }
-  catch { throw new Error('network error — is the server reachable?'); }
-  const ct = res.headers.get('content-type') || '';
-  if (!ct.includes('application/json')) {
-    const text = await res.text().catch(() => '');
-    throw new Error(text.trim() || `${res.status} ${res.statusText}`);
-  }
-  return res.json();
+import Dashboard from './pages/Dashboard.jsx';
+import Hosts from './pages/Hosts.jsx';
+import ImportPage from './pages/ImportPage.jsx';
+import History from './pages/History.jsx';
+import Files from './pages/Files.jsx';
+import StatusBanners from './components/StatusBanners.jsx';
+
+const { Header, Sider, Content } = Layout;
+const { useBreakpoint } = Grid;
+
+function LiveIndicator() {
+  const { t } = useTranslation();
+  const { metrics } = useAppData();
+  const down = !metrics || metrics.ok === false || metrics.active == null;
+  const tip = down
+    ? t('dashboard.offline')
+    : `${t('dashboard.requestsWindow', { n: metrics.requestsWindow, sec: metrics.windowSec })} · ${t('dashboard.connections', { active: metrics.active })}`;
+  return (
+    <Tooltip title={tip}>
+      <Space size={6} style={{ cursor: 'default' }}>
+        <Badge status={down ? 'error' : 'processing'} />
+        <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+          {down ? t('header.offline') : t('dashboard.perSec', { n: metrics.perSec })}
+        </Typography.Text>
+      </Space>
+    </Tooltip>
+  );
 }
-const get = (url) => http(url);
-const post = (url, body) =>
-  http(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
-
-const api = {
-  hosts: () => get('/api/hosts'),
-  status: () => get('/api/status'),
-  history: () => get('/api/history'),
-  host: (domain) => get(`/api/host?domain=${encodeURIComponent(domain)}`),
-  saveHost: (domain, content) => post('/api/host/save', { domain, content }),
-  importCsv: (csv, apply) => post(`/api/import?apply=${apply}`, { csv }),
-  switch: (domain, path, target) => post('/api/switch', { domain, path, target }),
-  switchBulk: (items, target) => post('/api/switch-bulk', { items, target }),
-  setUpstream: (domain, path, which, value) => post('/api/host/upstream', { domain, path, which, value }),
-  rename: (domain, newDomain) => post('/api/host/rename', { domain, newDomain }),
-  renameRoute: (domain, path, newPath) => post('/api/host/route', { domain, path, newPath }),
-  addHost: (domain) => post('/api/host/add', { domain }),
-  addRoute: (domain, path) => post('/api/host/route/add', { domain, path }),
-  delRoute: (domain, path) => post('/api/host/route/delete', { domain, path }),
-  enable: (domain) => post('/api/enable', { domain }),
-  disable: (domain) => post('/api/disable', { domain }),
-  del: (domain) => post('/api/host/delete', { domain }),
-  rollback: (hash) => post('/api/rollback', { hash }),
-  reload: () => post('/api/reload', {}),
-  configTest: () => post('/api/config-test', {}),
-  metrics: () => get('/api/metrics'),
-  appConfig: () => get('/api/config'),
-};
-
-const Badge = ({ kind, children }) => <span className={`badge b-${kind}`}>{children}</span>;
-const pathLabel = (p) => (p === '/' ? '/  (whole site)' : p);
 
 export default function App() {
-  const [hosts, setHosts] = useState([]);
-  const [status, setStatus] = useState(null);
-  const [hist, setHist] = useState([]);
-  const [served, setServed] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState(null);
+  const { t, i18n } = useTranslation();
+  const { dark, toggle } = useTheme();
+  const { status, busy, editorEnabled, brand, run, api } = useAppData();
+  const { notification } = AntApp.useApp();
+  const screens = useBreakpoint();
+  const [page, setPage] = useState('dashboard');
+  const [collapsed, setCollapsed] = useState(false);
+  const [testing, setTesting] = useState(false);
 
-  const [q, setQ] = useState('');
-  const [field, setField] = useState('any');
-  const [statusFilter, setStatusFilter] = useState('all');
-
-  const [editCell, setEditCell] = useState(null); // `${file}|${path}|${which}`
-  const [editVal, setEditVal] = useState('');
-  const [addingHost, setAddingHost] = useState(false);
-  const [hostInput, setHostInput] = useState('');
-  const [addHostErr, setAddHostErr] = useState(null);
-  const [addPathFor, setAddPathFor] = useState(null); // host.file
-  const [pathInput, setPathInput] = useState('');
-  const [addPathErr, setAddPathErr] = useState(null);
-  const [peek, setPeek] = useState(null);
-  const [editContent, setEditContent] = useState('');
-  const [saveMsg, setSaveMsg] = useState(null);
-  const [testResult, setTestResult] = useState(null);
-  const [showImport, setShowImport] = useState(false);
-  const [csv, setCsv] = useState('');
-  const [plan, setPlan] = useState(null);
-  const [metrics, setMetrics] = useState(null);
-  const [editorOn, setEditorOn] = useState(false);
-  const [showFiles, setShowFiles] = useState(false);
-
-  const refresh = useCallback(async () => {
+  async function testConfig() {
+    setTesting(true);
     try {
-      const [h, s, hi] = await Promise.all([api.hosts(), api.status(), api.history()]);
-      setHosts(h.hosts || []);
-      setStatus(s);
-      setHist(hi.history || []);
-      setServed(hi.served || '');
-      setErr(null);
+      const r = await api.configTest();
+      const common = { message: t('status.testLabel'), placement: 'bottomRight' };
+      if (r.ok === true) notification.success({ ...common, description: `${t('status.testValid')} ✓` });
+      else if (r.ok === null) notification.info({ ...common, description: r.message });
+      else notification.error({
+        ...common,
+        message: `${t('status.testLabel')} — ${t('status.testFailed')}`,
+        description: <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: 12 }}>{r.message}</pre>,
+        duration: 0,
+      });
     } catch (e) {
-      setErr(e.message || String(e));
-    }
-  }, []);
-  useEffect(() => { refresh(); }, [refresh]);
-
-  // poll live nginx throughput (stub_status via the app); independent of the host refresh
-  useEffect(() => {
-    let alive = true;
-    const tick = () => api.metrics().then((m) => { if (alive) setMetrics(m); }).catch(() => {});
-    tick();
-    const h = setInterval(tick, 5000);
-    return () => { alive = false; clearInterval(h); };
-  }, []);
-
-  // one-time: is the raw config file editor enabled? (FILE_EDITOR)
-  useEffect(() => { api.appConfig().then((c) => setEditorOn(!!c.editor)).catch(() => {}); }, []);
-
-  async function run(fn) {
-    setBusy(true);
-    try { await fn(); await refresh(); }
-    catch (e) { setErr(e.message || String(e)); }
-    finally { setBusy(false); }
-    setTimeout(refresh, 1400); // pick up the watcher's pending/test result
+      notification.error({ message: t('status.testLabel'), description: e.message || String(e), placement: 'bottomRight' });
+    } finally { setTesting(false); }
   }
 
-  const allRoutes = useMemo(() => hosts.flatMap((h) => h.routes.map((route) => ({ host: h, route }))), [hosts]);
+  const pending = !!status?.pending;
+  const isMobile = !screens.md;
 
-  const summary = useMemo(() => {
-    let onA = 0; let onB = 0; let disabled = 0; let migratable = 0; let onBall = 0;
-    for (const h of hosts) for (const r of h.routes) {
-      if (r.active === 'alt') onBall++;
-      if (!h.enabled) { disabled++; continue; }
-      if (r.active === 'alt') onB++; else onA++;
-      if (r.alt) migratable++;
-    }
-    const total = allRoutes.length;
-    const pct = migratable ? Math.round((onBall / migratable) * 100) : 0;
-    return { total, hostsN: hosts.length, onA, onB, disabled, migratable, pct };
-  }, [hosts, allRoutes]);
+  const menuItems = useMemo(() => {
+    const items = [
+      { key: 'dashboard', icon: <DashboardOutlined />, label: t('nav.dashboard') },
+      { key: 'hosts', icon: <ClusterOutlined />, label: t('nav.hosts') },
+      { key: 'import', icon: <UploadOutlined />, label: t('nav.import') },
+      { key: 'history', icon: <HistoryOutlined />, label: t('nav.history') },
+    ];
+    if (editorEnabled) items.push({ key: 'files', icon: <FileTextOutlined />, label: t('nav.files') });
+    return items;
+  }, [t, editorEnabled]);
 
-  const filteredRoutes = useMemo(() => {
-    const ql = q.trim().toLowerCase();
-    return allRoutes.filter(({ host, route }) => {
-      if (statusFilter === 'A' && !(host.enabled && route.active === 'primary')) return false;
-      if (statusFilter === 'B' && !(host.enabled && route.active === 'alt')) return false;
-      if (statusFilter === 'disabled' && host.enabled) return false;
-      if (statusFilter === 'noalt' && route.alt) return false;
-      if (ql) {
-        const cols = field === 'domain' ? [host.domain]
-          : field === 'path' ? [route.path]
-          : field === 'a' ? [route.primary]
-          : field === 'b' ? [route.alt]
-          : [host.domain, route.path, route.primary, route.alt];
-        if (!cols.some((c) => (c || '').toLowerCase().includes(ql))) return false;
-      }
-      return true;
-    });
-  }, [allRoutes, q, field, statusFilter]);
-
-  const groups = useMemo(() => {
-    const m = new Map();
-    for (const item of filteredRoutes) {
-      if (!m.has(item.host.domain)) m.set(item.host.domain, { host: item.host, routes: [] });
-      m.get(item.host.domain).routes.push(item.route);
-    }
-    return [...m.values()];
-  }, [filteredRoutes]);
-
-  const runningIndex = useMemo(
-    () => hist.findIndex((c) => served && (c.hash.startsWith(served) || served.startsWith(c.hash))),
-    [hist, served],
-  );
-
-  async function bulk(target) {
-    const items = filteredRoutes.filter((x) => x.host.managed).map((x) => ({ domain: x.host.domain, path: x.route.path }));
-    if (!items.length) return;
-    const label = target === 'alt' ? 'B (target)' : 'A (current)';
-    if (!window.confirm(`Switch ${items.length} filtered route(s) to backend ${label}?`)) return;
-    await run(() => api.switchBulk(items, target));
-  }
-
-  async function del(domain) {
-    if (!window.confirm(`Delete host ${domain} (all its routes)?\n\nThe .conf file is removed and committed. Restore from the History panel (Rollback) if this was a mistake.`)) return;
-    await run(() => api.del(domain));
-  }
-
-  function startEdit(host, route, which) {
-    setEditCell(`${host.file}|${route.path}|${which}`);
-    setEditVal((which === 'primary' ? route.primary : route.alt) || '');
-  }
-  async function commitEdit(host, route, which) {
-    if (editCell !== `${host.file}|${route.path}|${which}`) return;
-    const val = editVal.trim();
-    const orig = (which === 'primary' ? route.primary : route.alt) || '';
-    setEditCell(null);
-    if (val === orig) return;
-    await run(() => api.setUpstream(host.domain, route.path, which, val).then((r) => { if (r && r.error) window.alert(`Edit failed: ${r.error}`); }));
-  }
-
-  // rename host (domain) / rename a route's path — double-click to edit
-  function startEditHost(host) { setEditCell(`H|${host.file}`); setEditVal(host.domain); }
-  async function commitEditHost(host) {
-    if (editCell !== `H|${host.file}`) return;
-    const val = editVal.trim(); setEditCell(null);
-    if (!val || val === host.domain) return;
-    await run(() => api.rename(host.domain, val).then((r) => { if (r && r.error) window.alert(`Rename failed: ${r.error}`); }));
-  }
-  function startEditPath(host, route) { setEditCell(`P|${host.file}|${route.path}`); setEditVal(route.path); }
-  async function commitEditPath(host, route) {
-    if (editCell !== `P|${host.file}|${route.path}`) return;
-    const val = editVal.trim(); setEditCell(null);
-    if (!val || val === route.path) return;
-    await run(() => api.renameRoute(host.domain, route.path, val).then((r) => { if (r && r.error) window.alert(`Rename failed: ${r.error}`); }));
-  }
-
-  // switch EVERY route in a domain to A or B at once
-  async function hostSwitch(host, target) {
-    const items = host.routes.filter((r) => target === 'primary' || r.alt).map((r) => ({ domain: host.domain, path: r.path }));
-    if (!items.length) return;
-    await run(() => api.switchBulk(items, target));
-  }
-
-  // add a new host (default root route 127.0.0.1:80) / add a path to a host
-  async function createHost() {
-    const d = hostInput.trim().toLowerCase();
-    if (!d) { setAddingHost(false); setAddHostErr(null); return; }
-    setBusy(true);
-    try {
-      const r = await api.addHost(d);
-      if (r && r.error) { setAddHostErr(r.error); return; }  // keep input open, show error
-      setAddingHost(false); setHostInput(''); setAddHostErr(null); await refresh();
-    } finally { setBusy(false); }
-    setTimeout(refresh, 1400);
-  }
-  async function createPath(host) {
-    const p = pathInput.trim();
-    if (!p) { setAddPathFor(null); setAddPathErr(null); return; }
-    setBusy(true);
-    try {
-      const r = await api.addRoute(host.domain, p);
-      if (r && r.error) { setAddPathErr(r.error); return; }  // keep input open, show error
-      setAddPathFor(null); setPathInput(''); setAddPathErr(null); await refresh();
-    } finally { setBusy(false); }
-    setTimeout(refresh, 1400);
-  }
-  async function delPath(host, route) {
-    if (!window.confirm(`Delete path "${route.path}" from ${host.domain}?`)) return;
-    await run(() => api.delRoute(host.domain, route.path).then((r) => { if (r && r.error) window.alert(`Delete failed: ${r.error}`); }));
-  }
-
-  async function openPeek(domain) {
-    setBusy(true);
-    try { const p = await api.host(domain); setPeek(p); setEditContent(p.content || ''); setSaveMsg(null); }
-    finally { setBusy(false); }
-  }
-  async function saveHost() {
-    setBusy(true);
-    try {
-      const r = await api.saveHost(peek.domain, editContent);
-      setSaveMsg(r);
-      if (!r.error) setPeek({ ...peek, content: editContent });
-      await refresh();
-    } finally { setBusy(false); }
-  }
-  function closePeek() {
-    if (peek && editContent !== peek.content && !window.confirm('Discard unsaved edits to this file?')) return;
-    setPeek(null);
-  }
-  function brokenDomain(msg) {
-    const m = /\/sites\/([A-Za-z0-9._-]+?)\.conf(?:\.disabled)?\b/.exec(msg || '');
-    return m ? m[1] : null;
-  }
-  async function rollback(c) {
-    if (!window.confirm(`Roll back the WHOLE config to ${c.hash} — "${c.message}"?\n\nEvery change made AFTER this checkpoint is discarded and nginx reloaded.`)) return;
-    const r = await api.rollback(c.hash);
-    if (r && r.error) { window.alert(`Rollback failed: ${r.error}`); return; }
-    await refresh();
-  }
-  async function testConfig() { setBusy(true); try { setTestResult(await api.configTest()); } finally { setBusy(false); } }
-  async function preview() { setBusy(true); try { setPlan(await api.importCsv(csv, false)); } finally { setBusy(false); } }
-  async function apply() { setBusy(true); try { const r = await api.importCsv(csv, true); setPlan(r); await refresh(); } finally { setBusy(false); } }
-  async function onFile(e) { const f = e.target.files[0]; if (f) setCsv(await f.text()); }
-
-  const chip = (key, label) => <span className={`chip ${statusFilter === key ? 'active' : ''}`} onClick={() => setStatusFilter(key)}>{label}</span>;
-
-  // editable Backend A/B cell for a route
-  const cell = (host, route, which) => {
-    const val = which === 'primary' ? route.primary : route.alt;
-    const live = host.enabled && route.active === which;
-    const cls = live ? (which === 'primary' ? 'cA' : 'cB') : 'muted';
-    const id = `${host.file}|${route.path}|${which}`;
-    return editCell === id
-      ? <input className="cellinput" autoFocus value={editVal}
-          placeholder={which === 'alt' ? 'addr:port (blank = none)' : 'addr:port'}
-          onChange={(e) => setEditVal(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') commitEdit(host, route, which); else if (e.key === 'Escape') setEditCell(null); }}
-          onBlur={() => commitEdit(host, route, which)} />
-      : <code className={cls} title="double-click to edit" style={{ cursor: 'text' }} onDoubleClick={() => host.managed && startEdit(host, route, which)}>{val || '—'}</code>;
+  const pages = {
+    dashboard: <Dashboard onNavigate={setPage} />,
+    hosts: <Hosts />,
+    import: <ImportPage />,
+    history: <History />,
+    files: <Files />,
   };
 
-  // live nginx network status (from /api/metrics — stub_status scraped by the app)
-  const netDown = !metrics || metrics.ok === false || metrics.active == null;
-  const netTip = netDown
-    ? 'nginx stub_status unreachable (app can\'t read nginx metrics)'
-    : `${metrics.requestsWindow} requests in the last ${metrics.windowSec}s · active ${metrics.active} (reading ${metrics.reading} / writing ${metrics.writing} / waiting ${metrics.waiting})`;
+  const langMenu = {
+    items: LANGUAGES.map((l) => ({ key: l.code, label: l.label })),
+    selectable: true,
+    selectedKeys: [i18n.language],
+    onClick: ({ key }) => i18n.changeLanguage(key),
+  };
+  const currentLang = LANGUAGES.find((l) => l.code === i18n.language) || LANGUAGES[0];
+
+  const sider = (
+    <>
+      <div style={{
+        height: 56, display: 'flex', alignItems: 'center', gap: 10,
+        padding: collapsed ? '0 0 0 22px' : '0 20px', overflow: 'hidden', whiteSpace: 'nowrap',
+      }}>
+        <ThunderboltOutlined style={{ fontSize: 22, color: '#3b82f6' }} />
+        {!collapsed && (
+          <div style={{ lineHeight: 1.15 }}>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>{brand}</div>
+            <div style={{ fontSize: 11, opacity: 0.55 }}>{t('app.subtitle')}</div>
+          </div>
+        )}
+      </div>
+      <Menu
+        theme={dark ? 'dark' : 'light'}
+        mode="inline"
+        selectedKeys={[page]}
+        items={menuItems}
+        onClick={({ key }) => { setPage(key); if (isMobile) setCollapsed(true); }}
+        style={{ borderInlineEnd: 0, background: 'transparent' }}
+      />
+    </>
+  );
 
   return (
-    <div className="wrap">
-      <h1>nginx-managed — migration cockpit</h1>
-      <p className="sub">Cut routes (<b>host</b> or <b>host/path/*</b>) from <b>backend A</b> to <b>backend B</b>. One file per domain · hand edits preserved · no mass delete.</p>
-
-      {err && (
-        <div className="banner fail" style={{ whiteSpace: 'pre-wrap' }}>
-          ⚠ {err}
-          {' '}<button className="ghost sm" onClick={() => setErr(null)}>dismiss</button>
-        </div>
+    <Layout style={{ minHeight: '100vh' }}>
+      {!isMobile && (
+        <Sider
+          theme={dark ? 'dark' : 'light'}
+          collapsible
+          collapsed={collapsed}
+          onCollapse={setCollapsed}
+          width={232}
+          style={{ borderInlineEnd: `1px solid ${dark ? '#20242e' : '#e8e8e8'}` }}
+        >
+          {sider}
+        </Sider>
       )}
 
-      {status && (
-        <div className={`banner ${status.reload.ok ? 'ok' : 'fail'}`}>
-          {status.reload.ok ? '✓ nginx serving — ' : '✗ nginx reload problem — '}{status.reload.message}
-          {!status.reload.ok && brokenDomain(status.reload.message) && (
-            <>{' '}<button className="ghost sm" onClick={() => openPeek(brokenDomain(status.reload.message))}>Edit {brokenDomain(status.reload.message)}.conf</button></>
+      <Layout>
+        <Header style={{
+          display: 'flex', alignItems: 'center', gap: 12, padding: '0 16px',
+          borderBottom: `1px solid ${dark ? '#20242e' : '#e8e8e8'}`, position: 'sticky', top: 0, zIndex: 10,
+        }}>
+          {isMobile && (
+            <Button type="text" icon={<MenuOutlined />} onClick={() => setCollapsed((c) => !c)} />
           )}
-        </div>
-      )}
-      {status && status.pending && (
-        <div className={`banner ${status.test.ok ? 'warn' : 'fail'}`} style={{ whiteSpace: 'pre-wrap' }}>
-          ⚠ Unreloaded changes pending. <b>nginx -t:</b>{' '}
-          {status.test.ok
-            ? 'valid ✓ — click “Reload nginx” to apply.'
-            : <>FAILED ✗ — fix before reloading.{'\n'}{status.test.message}</>}
-          {!status.test.ok && brokenDomain(status.test.message) && (
-            <>{'\n'}<button className="ghost sm" onClick={() => openPeek(brokenDomain(status.test.message))}>Edit {brokenDomain(status.test.message)}.conf</button></>
-          )}
-        </div>
-      )}
+          <Typography.Text strong style={{ fontSize: 15 }}>
+            {menuItems.find((m) => m.key === page)?.label}
+          </Typography.Text>
 
-      <div className="card">
-        <div className="bar">
-          <div className="stat"><b>{summary.total}</b><span>routes / {summary.hostsN} hosts</span></div>
-          <div className="stat"><b className="cA">{summary.onA}</b><span>on A</span></div>
-          <div className="stat"><b className="cB">{summary.onB}</b><span>on B (migrated)</span></div>
-          <div className="stat"><b>{summary.disabled}</b><span>disabled</span></div>
-          <div className="stat" title={netTip}>
-            <b>
-              <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', marginRight: 6, verticalAlign: 'middle', background: netDown ? '#f43f5e' : '#22c55e' }} />
-              {netDown ? 'offline' : `${metrics.perSec}/s`}
-            </b>
-            <span>{netDown ? 'nginx unreachable' : `${metrics.active} conn · ${metrics.requestsWindow}/${metrics.windowSec}s`}</span>
+          <div style={{ flex: 1 }} />
+
+          <LiveIndicator />
+
+          <Tooltip title={t('header.testConfig')}>
+            <Button icon={<ExperimentOutlined />} loading={testing} onClick={testConfig}>
+              {!isMobile && t('header.testConfig')}
+            </Button>
+          </Tooltip>
+
+          <Tooltip title={pending ? t('header.pendingTip') : t('header.nothingPending')}>
+            <Badge dot={pending} color="#f59e0b" offset={[-2, 2]}>
+              <Button
+                type={pending ? 'primary' : 'default'}
+                icon={<ReloadOutlined />}
+                loading={busy}
+                onClick={() => run(api.reload)}
+              >
+                {!isMobile && t('header.reload')}
+              </Button>
+            </Badge>
+          </Tooltip>
+
+          <Dropdown menu={langMenu} trigger={['click']}>
+            <Button type="text" icon={<GlobalOutlined />}>{currentLang.short}</Button>
+          </Dropdown>
+
+          <Tooltip title={t('header.theme')}>
+            <Button type="text" icon={dark ? <BulbFilled /> : <BulbOutlined />} onClick={toggle} />
+          </Tooltip>
+        </Header>
+
+        <Content style={{ padding: isMobile ? 12 : 24, overflow: 'auto' }}>
+          <div style={{ maxWidth: 1280, margin: '0 auto' }}>
+            <StatusBanners onNavigate={setPage} />
+            {pages[page]}
           </div>
-          <div style={{ flex: 1, minWidth: 160 }}>
-            <div className="progress"><div style={{ width: `${summary.pct}%` }} /></div>
-            <span className="muted" style={{ fontSize: 12 }}>{summary.pct}% of {summary.migratable} migratable routes on B</span>
-          </div>
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            <button className="ghost" onClick={() => run(async () => {})} disabled={busy}>Refresh</button>
-            {editorOn && <button className="ghost" onClick={() => setShowFiles(true)} title="Edit raw files under /etc/nginx">Files</button>}
-            <button className="ghost" onClick={testConfig} disabled={busy}>Test config</button>
-            <button className={status?.pending ? 'warn' : 'ghost'} onClick={() => run(api.reload)} disabled={busy} title={status?.pending ? 'Pending changes are not live until you reload' : 'Nothing pending'}>
-              {status?.pending ? 'Reload nginx ●' : 'Reload nginx'}
-            </button>
-          </div>
-        </div>
-        {testResult && (
-          <div className={`banner ${testResult.ok ? 'ok' : 'fail'}`} style={{ marginTop: 12, marginBottom: 0, whiteSpace: 'pre-wrap' }}>
-            <b>nginx -t:</b> {testResult.ok === true ? 'valid ✓' : testResult.ok === null ? 'unknown' : 'FAILED ✗'}{'\n'}{testResult.message}
-          </div>
-        )}
-      </div>
-
-      <div className="card">
-        <div className="bar" style={{ marginBottom: 12 }}>
-          <input className="search" placeholder="filter…" value={q} onChange={(e) => setQ(e.target.value)} />
-          <select value={field} onChange={(e) => setField(e.target.value)}>
-            <option value="any">any column</option>
-            <option value="domain">host</option>
-            <option value="path">path</option>
-            <option value="a">backend A</option>
-            <option value="b">backend B</option>
-          </select>
-          <div className="row" style={{ gap: 6 }}>
-            {chip('all', 'all')}{chip('A', 'on A')}{chip('B', 'on B')}{chip('disabled', 'disabled')}{chip('noalt', 'no B')}
-          </div>
-          <span className="muted right">{filteredRoutes.length} routes shown</span>
-        </div>
-        <div className="bar" style={{ marginBottom: 10 }}>
-          {addingHost
-            ? <span className="row" style={{ gap: 6 }}>
-                <input className="cellinput" autoFocus placeholder="new.example.com" value={hostInput}
-                  onChange={(e) => { setHostInput(e.target.value); setAddHostErr(null); }}
-                  onKeyDown={(e) => { if (e.key === 'Enter') createHost(); else if (e.key === 'Escape') { setAddingHost(false); setHostInput(''); setAddHostErr(null); } }} />
-                <button className="sm" onClick={createHost} disabled={busy}>Add host</button>
-                <button className="ghost sm" onClick={() => { setAddingHost(false); setHostInput(''); setAddHostErr(null); }}>Cancel</button>
-                {addHostErr && <span style={{ color: '#f5a3a3' }}>{addHostErr}</span>}
-              </span>
-            : <button className="ghost" onClick={() => { setAddingHost(true); setAddHostErr(null); }} disabled={busy}>+ Add host</button>}
-          <span className="muted">·  Bulk ({filteredRoutes.filter((x) => x.host.managed).length} filtered routes):</span>
-          <button onClick={() => bulk('alt')} disabled={busy}>Cut over → B</button>
-          <button className="ghost" onClick={() => bulk('primary')} disabled={busy}>Roll back → A</button>
-          <a className="right" href="/api/download-all"><button className="ghost sm">Download all (.tar.gz)</button></a>
-          <a href="/api/export"><button className="ghost sm">Export CSV</button></a>
-        </div>
-
-        <table>
-          <thead><tr><th>Host / path</th><th>Backend A</th><th>Backend B</th><th>Live</th><th>Actions</th></tr></thead>
-          <tbody>
-            {groups.map((g) => (
-              <React.Fragment key={g.host.file}>
-                <tr className="domainrow">
-                  <td colSpan={5}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      {editCell === `H|${g.host.file}`
-                        ? <input className="cellinput" autoFocus value={editVal} style={{ minWidth: 200 }}
-                            onChange={(e) => setEditVal(e.target.value)}
-                            onKeyDown={(e) => { if (e.key === 'Enter') commitEditHost(g.host); else if (e.key === 'Escape') setEditCell(null); }}
-                            onBlur={() => commitEditHost(g.host)} />
-                        : <code><b title="double-click to rename host" style={{ cursor: 'text' }} onDoubleClick={() => startEditHost(g.host)}>{g.host.domain}</b></code>}
-                      {!g.host.managed && <Badge kind="manual">manual</Badge>}
-                      {!g.host.enabled && <Badge kind="disabled">disabled</Badge>}
-                      <span className="row" style={{ gap: 6, marginLeft: 'auto' }}>
-                        <button className="ghost sm" title="switch ALL routes to backend A" disabled={busy || !g.host.managed || !g.host.routes.some((r) => r.active === 'alt')} onClick={() => hostSwitch(g.host, 'primary')}>→ A</button>
-                        <button className="ghost sm" title="switch ALL routes to backend B" disabled={busy || !g.host.managed || !g.host.routes.some((r) => r.alt && r.active === 'primary')} onClick={() => hostSwitch(g.host, 'alt')}>→ B</button>
-                        <button className="ghost sm" title="add a path/route to this host" disabled={busy || !g.host.managed} onClick={() => { setAddPathFor(g.host.file); setPathInput(''); setAddPathErr(null); }}>+ path</button>
-                        <button className="ghost sm" onClick={() => openPeek(g.host.domain)}>Peek / edit file</button>
-                        <a className="sm" href={`/api/download?domain=${encodeURIComponent(g.host.domain)}`}><button className="ghost sm">↓</button></a>
-                        {g.host.enabled
-                          ? <button className="ghost sm" disabled={busy} onClick={() => run(() => api.disable(g.host.domain))}>Disable</button>
-                          : <button className="ghost sm" disabled={busy} onClick={() => run(() => api.enable(g.host.domain))}>Enable</button>}
-                        <button className="ghost sm danger" disabled={busy} onClick={() => del(g.host.domain)}>Delete</button>
-                      </span>
-                    </div>
-                  </td>
-                </tr>
-                {addPathFor === g.host.file && (
-                  <tr className="domainrow">
-                    <td colSpan={5} style={{ paddingLeft: 22 }}>
-                      <span className="row" style={{ gap: 6 }}>
-                        <input className="cellinput" autoFocus placeholder="/path/* (or / for whole site)" value={pathInput}
-                          onChange={(e) => { setPathInput(e.target.value); setAddPathErr(null); }}
-                          onKeyDown={(e) => { if (e.key === 'Enter') createPath(g.host); else if (e.key === 'Escape') { setAddPathFor(null); setPathInput(''); setAddPathErr(null); } }} />
-                        <button className="sm" onClick={() => createPath(g.host)} disabled={busy}>Add path</button>
-                        <button className="ghost sm" onClick={() => { setAddPathFor(null); setPathInput(''); setAddPathErr(null); }}>Cancel</button>
-                        {addPathErr ? <span style={{ color: '#f5a3a3' }}>{addPathErr}</span> : <span className="muted">new route → 127.0.0.1:80, no Backend B</span>}
-                      </span>
-                    </td>
-                  </tr>
-                )}
-                {g.routes.map((route) => (
-                  <tr key={route.path} style={{ opacity: g.host.enabled ? 1 : 0.5 }}>
-                    <td style={{ paddingLeft: 22 }}>
-                      {editCell === `P|${g.host.file}|${route.path}`
-                        ? <input className="cellinput" autoFocus value={editVal} placeholder="/path/* or / for whole site"
-                            onChange={(e) => setEditVal(e.target.value)}
-                            onKeyDown={(e) => { if (e.key === 'Enter') commitEditPath(g.host, route); else if (e.key === 'Escape') setEditCell(null); }}
-                            onBlur={() => commitEditPath(g.host, route)} />
-                        : <code className="muted" title="double-click to edit path" style={{ cursor: 'text' }} onDoubleClick={() => g.host.managed && startEditPath(g.host, route)}>{pathLabel(route.path)}</code>}
-                    </td>
-                    <td>{cell(g.host, route, 'primary')}</td>
-                    <td>{cell(g.host, route, 'alt')}</td>
-                    <td><Badge kind={route.active === 'alt' ? 'skip-manual' : 'managed'}>{route.active === 'alt' ? 'B' : 'A'}</Badge></td>
-                    <td>
-                      <div className="row">
-                        <button className="ghost sm" disabled={busy || !g.host.managed || route.active === 'primary'} onClick={() => run(() => api.switch(g.host.domain, route.path, 'primary'))}>→ A</button>
-                        <button className="ghost sm" disabled={busy || !g.host.managed || !route.alt || route.active === 'alt'} onClick={() => run(() => api.switch(g.host.domain, route.path, 'alt'))}>→ B</button>
-                        <button className="ghost sm danger" title="delete this path (delete the host to remove its last route)" disabled={busy || g.host.routes.length <= 1} onClick={() => delPath(g.host, route)}>✕</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </React.Fragment>
-            ))}
-            {groups.length === 0 && <tr><td colSpan={5} className="muted">No routes match. {hosts.length === 0 ? 'Import a CSV below.' : ''}</td></tr>}
-          </tbody>
-        </table>
-        <p className="muted" style={{ marginTop: 8 }}>Double-click the <b>host name</b>, a <b>path</b>, or a <b>Backend A/B</b> cell to edit it (Enter to save, Esc to cancel). Per-row → A / → B switch one route; the header → A / → B switch the whole domain. Delete/Disable/Download act on the whole domain file.</p>
-      </div>
-
-      <div className="card">
-        <h2 onClick={() => setShowImport((v) => !v)} style={{ cursor: 'pointer' }}>{showImport ? '▾' : '▸'} Bulk import / update CSV</h2>
-        {showImport && (
-          <>
-            <div className="row" style={{ marginBottom: 10 }}>
-              <input type="file" accept=".csv,text/csv" onChange={onFile} />
-              <span className="muted">"domain[/path[/*]]","address","port","alt_address","alt_port" — rows grouped by domain into one file</span>
-            </div>
-            <textarea value={csv} onChange={(e) => setCsv(e.target.value)} placeholder={'"www.example.com","10.0.0.1","80","10.0.1.1","80"\n"www.example.com/api/*","10.0.0.5","8080","10.0.1.5","8080"'} />
-            <div className="row" style={{ marginTop: 10 }}>
-              <button className="ghost" onClick={preview} disabled={busy || !csv.trim()}>Preview (dry run)</button>
-              <button onClick={apply} disabled={busy || !csv.trim()}>Apply</button>
-            </div>
-            {plan && (
-              <div style={{ marginTop: 14 }}>
-                {plan.summary && (
-                  <p className="muted">{plan.summary.create} create · {plan.summary.update} update · {plan.summary.unchanged} unchanged · {plan.summary['skip-manual']} manual-skipped · {plan.summary.invalid} invalid{plan.applied ? ' — applied' : ' — preview only'}</p>
-                )}
-                <table>
-                  <thead><tr><th>Domain</th><th>Status</th><th>Detail</th></tr></thead>
-                  <tbody>{plan.plan.map((p, i) => (<tr key={i}><td><code>{p.domain}</code></td><td><Badge kind={p.status}>{p.status}</Badge></td><td className="muted">{p.detail}</td></tr>))}</tbody>
-                </table>
-              </div>
-            )}
-          </>
-        )}
-      </div>
-
-      <div className="card">
-        <h2>Change history (git) — last 50 commits · every action is committed</h2>
-        <p className="muted" style={{ marginTop: -4 }}>
-          <Badge kind="managed">● running</Badge> = the commit nginx is serving (last reload).{' '}
-          Anything <Badge kind="skip-manual">pending</Badge> above it is committed but not live until you reload.{' '}
-          Rollback restores the whole config to that checkpoint and <b>discards every change after it</b>.
-        </p>
-        <table>
-          <thead><tr><th>Commit</th><th>Timestamp</th><th>Change</th><th>Action</th></tr></thead>
-          <tbody>
-            {hist.map((c, i) => {
-              const isRunning = i === runningIndex;
-              const isPending = runningIndex >= 0 && i < runningIndex;
-              return (
-                <tr key={c.hash} className={isRunning ? 'running' : ''}>
-                  <td><code>{c.hash}</code>{i === 0 && <> <span className="muted">(latest)</span></>}{isRunning && <> <Badge kind="managed">● running</Badge></>}{isPending && <> <Badge kind="skip-manual">pending</Badge></>}</td>
-                  <td className="muted">{c.date}</td>
-                  <td>{c.message}</td>
-                  <td><button className="ghost sm" disabled={busy || i === 0} onClick={() => rollback(c)}>Rollback</button></td>
-                </tr>
-              );
-            })}
-            {hist.length === 0 && <tr><td colSpan={4} className="muted">No commits yet.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-
-      {showFiles && <FileEditor onClose={() => { setShowFiles(false); refresh(); }} />}
-
-      {peek && (
-        <div className="overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) closePeek(); }}>
-          <div className="modal">
-            <div className="bar">
-              <h2 style={{ margin: 0 }}>Edit <code>{peek.file}</code></h2>
-              <span className="muted">{(peek.routes || []).length} route(s): {(peek.routes || []).map((r) => r.path).join(', ')}</span>
-              <a className="right" href={`/api/download?domain=${encodeURIComponent(peek.domain)}`}><button className="ghost sm">Download</button></a>
-              <button className="ghost sm" onClick={closePeek}>Close</button>
-            </div>
-            <textarea className="editor" value={editContent} spellCheck={false} onChange={(e) => setEditContent(e.target.value)} />
-            <div className="row" style={{ marginTop: 10 }}>
-              <button onClick={saveHost} disabled={busy || editContent === peek.content}>Save &amp; commit</button>
-              <span className="muted">Saving writes the file, commits a checkpoint, and runs nginx -t. Not applied until you Reload.</span>
-            </div>
-            {saveMsg && (saveMsg.error
-              ? <div className="banner fail" style={{ marginTop: 10 }}>{saveMsg.error}</div>
-              : <div className={`banner ${saveMsg.ok ? 'warn' : 'fail'}`} style={{ marginTop: 10, whiteSpace: 'pre-wrap' }}>
-                  Saved &amp; committed (pending reload). <b>nginx -t:</b> {saveMsg.ok === true ? 'valid ✓' : saveMsg.ok === null ? 'unknown' : 'FAILED ✗'}{'\n'}{saveMsg.message}
-                </div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
+        </Content>
+      </Layout>
+    </Layout>
   );
 }
