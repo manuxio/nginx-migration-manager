@@ -1,4 +1,4 @@
-FROM nginx:1.27-alpine
+FROM nginx:1.30-alpine
 
 # openssl: self-signed cert  |  inotify-tools: config watcher  |  bash: scripts
 RUN apk add --no-cache openssl inotify-tools bash
