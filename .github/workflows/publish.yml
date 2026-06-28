@@ -23,7 +23,7 @@ jobs:
           - name: app
             context: ./app
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # docker-container driver is required for the gha cache export below
       - name: Set up Buildx
