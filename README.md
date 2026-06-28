@@ -1,5 +1,15 @@
 # nginx-migration-manager
 
+[![Publish images](https://github.com/manuxio/nginx-migration-manager/actions/workflows/publish.yml/badge.svg)](https://github.com/manuxio/nginx-migration-manager/actions/workflows/publish.yml)
+[![CodeQL](https://github.com/manuxio/nginx-migration-manager/actions/workflows/codeql.yml/badge.svg)](https://github.com/manuxio/nginx-migration-manager/actions/workflows/codeql.yml)
+[![Security](https://github.com/manuxio/nginx-migration-manager/actions/workflows/security.yml/badge.svg)](https://github.com/manuxio/nginx-migration-manager/actions/workflows/security.yml)
+
+[![Container images](https://img.shields.io/badge/ghcr.io-images-2496ED?logo=github)](https://github.com/manuxio/nginx-migration-manager/pkgs/container/nginx-migration-manager%2Fapp)
+![Docker Compose](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
+![Node.js 22](https://img.shields.io/badge/Node.js-22_LTS-339933?logo=nodedotjs&logoColor=white)
+![nginx 1.30](https://img.shields.io/badge/nginx-1.30-009639?logo=nginx&logoColor=white)
+![React 18](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)
+
 A small, self-contained tool for **migrating a fleet of reverse-proxy hosts from one set of
 backends to another** — built to cut ~250 domains from **backend A** to **backend B** during
 an infrastructure migration, one host or one batch at a time, with instant rollback.
@@ -18,6 +28,38 @@ ever mass-deleted; a CSV that omits a domain leaves it untouched.
 
 ---
 
+## Screenshots
+
+A migration in progress — 10 example hosts, 4 already cut over to backend B.
+
+**Dashboard** — fleet overview at a glance: how many routes are on backend A vs B, live
+migration progress, throughput from nginx, and one-click Test / Reload.
+
+![Dashboard](docs/screenshots/dashboard.png)
+
+**Hosts & routes** — the migration workspace. Every route shows its backend A and B; flip one
+route or a whole host A↔B, filter and bulk cut-over the selection, enable/disable, edit, or
+delete — all staged until you reload.
+
+![Hosts and routes](docs/screenshots/hosts.png)
+
+**Bulk import** — paste or drop a CSV. **Preview is a dry-run** (create / update / unchanged /
+skip-manual / invalid) so you see exactly what will change before you apply. Import never deletes.
+
+![Bulk import](docs/screenshots/import.png)
+
+**History** — every action is a git commit. The *running* badge marks the checkpoint nginx is
+currently serving; **Rollback** restores the whole config to any earlier checkpoint.
+
+![Change history](docs/screenshots/history.png)
+
+**Config files** — a raw, syntax-highlighted editor over the whole `/etc/nginx` for the cases
+the structured UI doesn't cover. Saving commits a checkpoint and runs `nginx -t`.
+
+![Config file editor](docs/screenshots/files.png)
+
+---
+
 ## Quick start
 
 ```bash
@@ -25,7 +67,8 @@ cp .env.example .env          # set credentials (and ports if 80/3000 are taken)
 docker compose up -d --build
 ```
 
-- **Admin UI:** <http://localhost:3000> (basic auth — `admin` / `changeme` by default)
+- **Admin UI:** <http://localhost:3000> (basic auth — set `BASIC_AUTH_USER` / `BASIC_AUTH_PASS`
+  in `.env` first; the app refuses to serve until a password is set)
 - **Proxy:** <http://localhost> (HTTP only)
 
 Load `examples/test-10-hosts.csv` from the UI (Import → Preview → Apply) to try it.
@@ -60,8 +103,9 @@ GitHub package settings.)
 |---|---|---|
 | `HTTP_PORT` | `80` | host port → nginx :80 |
 | `APP_PORT` | `3000` | host port → admin UI :3000 |
-| `BASIC_AUTH_USER` | `admin` | admin UI user (empty = auth disabled) |
-| `BASIC_AUTH_PASS` | `changeme` | admin UI password |
+| `BASIC_AUTH_USER` | `admin` | admin UI user |
+| `BASIC_AUTH_PASS` | *(none)* | admin UI password — **required**: the app returns `503` until it's set |
+| `AUTH_DISABLED` | *(unset)* | set to `1` to run with **no** auth (trusted network only) |
 
 Container ports are fixed (nginx 80, app 3000); only the **host** mapping is configurable.
 nginx is HTTP only — it no longer listens on 443.
