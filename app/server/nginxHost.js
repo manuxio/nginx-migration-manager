@@ -230,10 +230,12 @@ export function mergeDomain(existing, { domain, routes }) {
 }
 
 // Rewrite the server_name (and the "# domain:" header) to a new domain.
+// Regexes are restricted to horizontal whitespace + non-newline runs so they stay strictly
+// single-line and linear-time (no \s*-spanning-newlines backtracking / ReDoS).
 export function setServerName(content, domain) {
   return content
-    .replace(/^(#\s*domain:).*$/m, `$1 ${domain}`)
-    .replace(/^(\s*server_name\s+)[^;]*;(.*)$/m, `$1${domain};$2`);
+    .replace(/^([ \t]*#[ \t]*domain:).*$/m, `$1 ${domain}`)
+    .replace(/^([ \t]*server_name[ \t]+)[^;\n]*;(.*)$/m, `$1${domain};$2`);
 }
 
 // Rename a route's path: rewrite its "# managed:route" marker and the following "location"

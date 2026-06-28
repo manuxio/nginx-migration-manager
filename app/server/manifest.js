@@ -19,12 +19,21 @@ export function saveManifest(m) {
   fs.renameSync(tmp, MANIFEST_PATH);
 }
 
+// Reject keys that would walk/pollute Object.prototype when used as a manifest property.
+// Domains are hostname-validated upstream (which already excludes these), but guarding at the
+// property-access sink is the defensive belt-and-suspenders.
+export function safeKey(k) {
+  return typeof k === 'string' && k !== '__proto__' && k !== 'prototype' && k !== 'constructor';
+}
+
 export function recordHost(m, { domain, address, port, altAddress, altPort }, source) {
+  if (!safeKey(domain)) return m;
   m[domain] = { address, port, altAddress: altAddress || '', altPort: altPort || '', source, updatedAt: new Date().toISOString() };
   return m;
 }
 
 export function forgetHost(domain) {
+  if (!safeKey(domain)) return;
   const m = loadManifest();
-  if (m[domain]) { delete m[domain]; saveManifest(m); }
+  if (Object.prototype.hasOwnProperty.call(m, domain)) { delete m[domain]; saveManifest(m); }
 }

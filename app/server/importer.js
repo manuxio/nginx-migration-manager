@@ -4,13 +4,14 @@ import { validateRow } from './validate.js';
 import {
   existingFileFor, confPath, renderDomain, mergeDomain, writeHostFile, normPath,
 } from './nginxHost.js';
-import { loadManifest, saveManifest } from './manifest.js';
+import { loadManifest, saveManifest, safeKey } from './manifest.js';
 import { commitAll } from './gitStore.js';
 
 function routeSummary(routes) {
   return `${routes.length} route(s): ${routes.map((r) => normPath(r.path)).join(', ')}`;
 }
 function recordDomain(m, domain, routes) {
+  if (!safeKey(domain)) return;
   m[domain] = {
     routes: routes.map((r) => ({
       path: normPath(r.path),

@@ -22,13 +22,18 @@ function parseLine(line) {
 
 // Parse CSV text -> [{ domain, address, port, altAddress, altPort }].
 // Skips blanks, comments (#), and an optional header row (first row containing "domain").
+// A valid row (5 short fields: host/path, two addresses, two ports) is well under this. The
+// cap bounds parseLine's per-character scan so a single pathological multi-MB "line" can't
+// turn into a multi-million-iteration loop.
+const MAX_LINE = 4096;
+
 export function parseCsv(text) {
   const rows = [];
   const lines = String(text).split(/\r?\n/);
   let headerChecked = false;
   for (const raw of lines) {
     const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
+    if (!line || line.startsWith('#') || line.length > MAX_LINE) continue;
     const f = parseLine(line);
     if (!headerChecked) {
       headerChecked = true;

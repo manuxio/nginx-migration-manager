@@ -50,14 +50,30 @@ export function listDir(rel) {
 }
 
 // Read a file for editing. Refuses directories, oversize, and binary (null-byte) content.
+// Opens once and stats + reads through the same fd so the size check can't race a file swap
+// between the two (TOCTOU); EISDIR (opening a directory) maps to the friendly error.
 export function readFile(rel) {
   const file = safePath(rel);
-  const st = fs.statSync(file);
-  if (st.isDirectory()) throw new Error('is a directory');
-  if (st.size > MAX_EDIT_BYTES) return { path: relOf(file), tooLarge: true, size: st.size };
-  const buf = fs.readFileSync(file);
-  if (buf.includes(0)) return { path: relOf(file), binary: true, size: st.size };
-  return { path: relOf(file), content: buf.toString('utf8'), size: st.size };
+  let fd;
+  try { fd = fs.openSync(file, 'r'); }
+  catch (e) { if (e && e.code === 'EISDIR') throw new Error('is a directory'); throw e; }
+  try {
+    const st = fs.fstatSync(fd);
+    if (st.isDirectory()) throw new Error('is a directory');
+    if (st.size > MAX_EDIT_BYTES) return { path: relOf(file), tooLarge: true, size: st.size };
+    const buf = Buffer.allocUnsafe(st.size);
+    let off = 0;
+    while (off < st.size) {
+      const n = fs.readSync(fd, buf, off, st.size - off, off);
+      if (n === 0) break;
+      off += n;
+    }
+    const data = off === st.size ? buf : buf.subarray(0, off);
+    if (data.includes(0)) return { path: relOf(file), binary: true, size: st.size };
+    return { path: relOf(file), content: data.toString('utf8'), size: st.size };
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 // Atomic write (tmp + rename) so nginx never reads a half-written file. BOM-stripped.

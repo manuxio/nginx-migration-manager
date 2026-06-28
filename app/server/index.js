@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { timingSafeEqual as cryptoTimingSafeEqual, createHash } from 'node:crypto';
 import express from 'express';
+import { rateLimit } from 'express-rate-limit';
 
 import {
   PORT, AUTH_USER, AUTH_PASS, AUTH_CONFIGURED, AUTH_DISABLED, SITES_DIR,
@@ -47,6 +48,17 @@ app.use((req, res, next) => {
   if (req.path.startsWith('/api/')) res.set('Cache-Control', 'no-store');
   next();
 });
+
+// ------------------------------------------------------------- rate limiting
+// Throttle every request before auth so password-guessing and scripted abuse trip a limit;
+// the config-writing API is the security boundary. The window is generous enough for the UI's
+// status/metrics polling. Keyed by client IP (single-writer admin tool, so no trust-proxy).
+app.use(rateLimit({
+  windowMs: 60_000,
+  limit: 300,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+}));
 
 // ------------------------------------------------------------------ basic auth
 // Compare via crypto.timingSafeEqual over fixed-length SHA-256 digests: constant-time and,
